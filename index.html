@@ -1,0 +1,1276 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ระบบรายงานผลการนับคะแนนเลือกตั้ง เทศบาลตำบลหนองบัวศาลา</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font Awesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Sarabun', sans-serif; overflow-x: hidden; }
+        .fade-in { animation: fadeIn 0.4s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+        input[type=number]::-webkit-inner-spin-button, 
+        input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+        .syncing-indicator { display: none; }
+        .is-syncing .syncing-indicator { display: inline-flex; }
+        
+        /* Print Styles */
+        @media print {
+            body { background-color: white !important; }
+            header, #mobile-nav, .print\:hidden { display: none !important; }
+            main { padding: 0 !important; margin: 0 !important; max-width: 100% !important; }
+            .shadow-sm, .shadow-md, .shadow-lg, .shadow-xl { box-shadow: none !important; }
+            .border-slate-200 { border-color: #e2e8f0 !important; }
+            /* Force background colors to print */
+            * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+            .h-\[calc\(100vh-6rem\)\] { height: auto !important; min-height: auto !important; }
+        }
+    </style>
+</head>
+<body class="bg-slate-100 min-h-screen text-slate-800 flex flex-col">
+
+    <!-- Audio for Dashboard Notification -->
+    <audio id="ping-sound" src="https://actions.google.com/sounds/v1/alarms/positive_ding.ogg" preload="auto"></audio>
+    
+    <!-- Toast Container for Notifications -->
+    <div id="toast-container" class="fixed top-20 right-4 lg:right-6 z-[60] flex flex-col gap-3 pointer-events-none print:hidden"></div>
+
+    <!-- Header & Navigation -->
+    <header class="bg-white shadow-sm border-b border-slate-200 shrink-0 relative z-40 print:hidden">
+        <div class="max-w-[1920px] w-full mx-auto px-2 lg:px-6">
+            <div class="flex justify-between items-center h-14 lg:h-16">
+                <div class="flex items-center gap-3">
+                    <div class="bg-indigo-600 p-1.5 lg:p-2 rounded-lg text-white shadow-sm relative overflow-hidden">
+                        <i class="fa-solid fa-chart-pie text-lg lg:text-xl relative z-10"></i>
+                    </div>
+                    <span class="font-black text-lg lg:text-xl tracking-tight hidden sm:block text-slate-800">ElectionLive</span>
+                    
+                    <!-- Cloud Sync Indicator -->
+                    <div id="sync-status" class="ml-2 px-2 py-1 bg-blue-50 text-blue-600 rounded-full text-[10px] font-bold items-center gap-1 shadow-sm syncing-indicator">
+                        <i class="fa-solid fa-cloud-arrow-up fa-fade"></i> กำลังซิงค์ข้อมูล...
+                    </div>
+                </div>
+                <nav class="hidden sm:flex space-x-2 items-center" id="desktop-nav"></nav>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main id="main-content" class="w-full max-w-[1920px] mx-auto px-2 lg:px-6 py-2 lg:py-4 flex-1 flex flex-col min-h-0 relative z-10"></main>
+
+    <!-- Mobile Bottom Nav -->
+    <div class="sm:hidden fixed bottom-0 left-0 w-full bg-white border-t border-slate-200 flex justify-around p-2 pb-safe z-40 shadow-[0_-5px_15px_-10px_rgba(0,0,0,0.1)] print:hidden" id="mobile-nav"></div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- STATE MANAGEMENT ---
+        let state = {
+            activeTab: 'dashboard',
+            lastUpdated: null,
+            currentUser: null,
+            isVotingOpen: true, 
+            stationLastUpdated: {}, 
+            stationSubmitCount: {}, 
+            stationClosed: {}, 
+            mayorCandidates: [
+                { id: 'm1', number: 1, name: 'นาย ผู้สมัครนายก เบอร์หนึ่ง' },
+                { id: 'm2', number: 2, name: 'นาย ผู้สมัครนายก เบอร์สอง' },
+            ],
+            councilCandidates: {
+                1: Array.from({ length: 13 }, (_, i) => ({ id: `c1_${i + 1}`, number: i + 1, name: `ผู้สมัคร ส.ท. เขต 1 เบอร์ ${i + 1}` })),
+                2: Array.from({ length: 13 }, (_, i) => ({ id: `c2_${i + 1}`, number: i + 1, name: `ผู้สมัคร ส.ท. เขต 2 เบอร์ ${i + 1}` }))
+            },
+            scores: {}, 
+            staffAccounts: {},
+            googleSheetUrl: 'https://script.google.com/macros/s/AKfycbylPl9lPMiMQFSM8aX0rws2jwUqdypwP3OY0jbhv7QoyoLT1gARiUgCVWb4YYoeAuqi/exec',
+            loginMode: 'staff',
+            loginZone: 1,
+            loginStation: 1
+        };
+
+        let timerInterval = null;
+        let syncTimeout = null;
+        let dashboardInterval = null; 
+        let db, auth, appId, mainDocRef;
+        let isFirebaseReady = false;
+        let isInitialLoad = true;
+        let previousUpdateTimes = {}; 
+        let previousClosedStatus = {}; 
+
+        // --- TOAST NOTIFICATION SYSTEM ---
+        window.showToast = (title, desc, isAlert = false) => {
+            const container = document.getElementById('toast-container');
+            if (!container) return;
+            const toast = document.createElement('div');
+            const borderColor = isAlert ? 'border-rose-500' : 'border-emerald-500';
+            const iconColor = isAlert ? 'text-rose-500' : 'text-emerald-500';
+            const bgColor = isAlert ? 'bg-rose-50' : 'bg-emerald-50';
+            const textColor = isAlert ? 'text-rose-600' : 'text-emerald-600';
+            const borderColorInner = isAlert ? 'border-rose-100' : 'border-emerald-100';
+            const icon = isAlert ? 'fa-triangle-exclamation' : 'fa-bell';
+
+            toast.className = `bg-white border-l-4 ${borderColor} rounded-xl shadow-2xl p-4 flex items-start gap-3 transform transition-all duration-500 translate-x-full opacity-0 pointer-events-auto min-w-[280px] max-w-[90vw]`;
+            toast.innerHTML = `
+                <div class="${iconColor} mt-0.5 animate-bounce"><i class="fa-solid ${icon} text-xl sm:text-2xl"></i></div>
+                <div class="flex-1 pr-2 min-w-0">
+                    <h4 class="text-sm sm:text-base font-black text-slate-800 leading-tight truncate">${title}</h4>
+                    <p class="text-xs sm:text-sm font-bold ${textColor} mt-1 ${bgColor} inline-block px-2 py-0.5 rounded-lg border ${borderColorInner} truncate max-w-full">${desc}</p>
+                </div>
+            `;
+            container.appendChild(toast);
+            
+            const audio = document.getElementById('ping-sound');
+            if (audio && !isAlert) { // Play sound mostly for positive updates
+                audio.currentTime = 0;
+                audio.play().catch(e => console.log('Audio autoplay blocked', e));
+            }
+
+            setTimeout(() => toast.classList.remove('translate-x-full', 'opacity-0'), 50);
+            setTimeout(() => {
+                toast.classList.add('translate-x-full', 'opacity-0');
+                setTimeout(() => toast.remove(), 500);
+            }, 8000); 
+        };
+
+        window.showStaffAlert = (count, timeStr, isFinal = false) => {
+            const modal = document.createElement('div');
+            modal.className = 'fixed inset-0 z-[100] flex items-center justify-center px-4 bg-slate-900/60 backdrop-blur-sm fade-in print:hidden';
+            
+            let iconHtml = isFinal 
+                ? `<div class="w-16 h-16 sm:w-24 sm:h-24 bg-indigo-100 text-indigo-500 rounded-full flex items-center justify-center mx-auto mb-4 sm:mb-5 shadow-inner"><i class="fa-solid fa-box-archive text-3xl sm:text-5xl"></i></div>`
+                : `<div class="w-16 h-16 sm:w-24 sm:h-24 bg-emerald-100 text-emerald-500 rounded-full flex items-center justify-center mx-auto mb-4 sm:mb-5 shadow-inner"><i class="fa-solid fa-check-double text-3xl sm:text-5xl"></i></div>`;
+                
+            let titleHtml = isFinal ? "ปิดหีบสำเร็จ!" : "บันทึกสำเร็จ!";
+            let descHtml = isFinal 
+                ? `<p class="text-slate-600 font-bold mb-1 text-sm sm:text-base">ส่งข้อมูลรอบสุดท้ายเรียบร้อย</p><p class="text-slate-500 text-xs sm:text-sm">ปิดการแก้ไขคะแนนหน่วยนี้แล้ว</p>`
+                : `<p class="text-slate-600 font-bold mb-1 text-sm sm:text-base">ส่งข้อมูลการนับครั้งที่ <span class="text-emerald-600 font-black text-xl sm:text-2xl ml-1">${count}</span></p><p class="text-slate-500 text-xs sm:text-sm">เวลาบันทึกล่าสุด <span class="font-bold text-slate-700">${timeStr} น.</span></p>`;
+
+            modal.innerHTML = `
+                <div class="bg-white rounded-[2rem] p-6 sm:p-8 max-w-sm w-full text-center shadow-2xl transform scale-95 transition-all duration-300">
+                    ${iconHtml}
+                    <h3 class="text-2xl sm:text-3xl font-black text-slate-800 mb-3">${titleHtml}</h3>
+                    <div class="bg-slate-50 p-3 sm:p-4 rounded-2xl border border-slate-100 mb-5 sm:mb-6">
+                        ${descHtml}
+                    </div>
+                    <button onclick="this.closest('.fixed').remove()" class="w-full ${isFinal ? 'bg-gradient-to-r from-indigo-500 to-indigo-600 border-indigo-800' : 'bg-gradient-to-r from-emerald-500 to-teal-600 border-teal-800'} text-white font-bold py-3 sm:py-4 px-4 rounded-xl transition-all active:scale-95 shadow-md border-b-4 text-base sm:text-lg">
+                        ตกลง
+                    </button>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            setTimeout(() => modal.querySelector('div').classList.replace('scale-95', 'scale-100'), 10);
+        };
+
+        window.showConfirmModal = (title, message, confirmText, confirmClass, onConfirm) => {
+            const modal = document.createElement('div');
+            modal.className = 'fixed inset-0 z-[100] flex items-center justify-center px-4 bg-slate-900/60 backdrop-blur-sm fade-in print:hidden';
+            modal.innerHTML = `
+                <div class="bg-white rounded-[2rem] p-6 sm:p-8 max-w-sm w-full text-center shadow-2xl transform scale-95 transition-all duration-300">
+                    <div class="w-16 h-16 sm:w-20 sm:h-20 bg-rose-100 text-rose-500 rounded-full flex items-center justify-center mx-auto mb-4 sm:mb-5 shadow-inner">
+                        <i class="fa-solid fa-triangle-exclamation text-3xl sm:text-4xl"></i>
+                    </div>
+                    <h3 class="text-xl sm:text-2xl font-black text-slate-800 mb-2 sm:mb-3">${title}</h3>
+                    <p class="text-slate-500 mb-5 sm:mb-6 text-xs sm:text-sm">${message}</p>
+                    <div class="flex gap-2 sm:gap-3">
+                        <button onclick="this.closest('.fixed').remove()" class="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold py-2 sm:py-3 rounded-xl transition-all text-sm sm:text-base">ยกเลิก</button>
+                        <button id="btn-confirm-action" class="flex-1 ${confirmClass} text-white font-bold py-2 sm:py-3 rounded-xl transition-all shadow-md text-sm sm:text-base">${confirmText}</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            setTimeout(() => modal.querySelector('div').classList.replace('scale-95', 'scale-100'), 10);
+            
+            document.getElementById('btn-confirm-action').onclick = () => {
+                modal.remove();
+                onConfirm();
+            };
+        };
+
+        // --- LOAD DATA & FIREBASE ---
+        function loadLocalData() {
+            try {
+                const saved = localStorage.getItem('electionNongBuaSalaDataV8');
+                if (saved) {
+                    const parsed = JSON.parse(saved);
+                    state.mayorCandidates = parsed.mayorCandidates || state.mayorCandidates;
+                    state.councilCandidates = parsed.councilCandidates || state.councilCandidates;
+                    state.scores = parsed.scores || {};
+                    state.lastUpdated = parsed.lastUpdated || null;
+                    state.isVotingOpen = parsed.isVotingOpen !== undefined ? parsed.isVotingOpen : true;
+                    state.stationLastUpdated = parsed.stationLastUpdated || {};
+                    state.stationSubmitCount = parsed.stationSubmitCount || {};
+                    state.stationClosed = parsed.stationClosed || {};
+                    state.staffAccounts = parsed.staffAccounts || {};
+                    state.googleSheetUrl = parsed.googleSheetUrl || 'https://script.google.com/macros/s/AKfycbylPl9lPMiMQFSM8aX0rws2jwUqdypwP3OY0jbhv7QoyoLT1gARiUgCVWb4YYoeAuqi/exec';
+                    previousUpdateTimes = { ...state.stationLastUpdated };
+                    previousClosedStatus = { ...state.stationClosed };
+                }
+            } catch (e) {}
+        }
+
+        function triggerNotifsAndMerge(parsed) {
+            let newlyUpdated = [];
+            let newlyClosed = [];
+            
+            for (const key in parsed.stationLastUpdated) {
+                if (previousUpdateTimes[key] && parsed.stationLastUpdated[key] > previousUpdateTimes[key]) {
+                    newlyUpdated.push(key);
+                }
+                previousUpdateTimes[key] = parsed.stationLastUpdated[key];
+            }
+
+            for (const key in parsed.stationClosed) {
+                if (!previousClosedStatus[key] && parsed.stationClosed[key]) {
+                    newlyClosed.push(key);
+                }
+                previousClosedStatus[key] = parsed.stationClosed[key];
+            }
+            
+            if (!isInitialLoad && (state.activeTab === 'dashboard' || state.activeTab === 'status' || state.activeTab === 'settings')) {
+                newlyClosed.forEach(key => {
+                    const [z, s] = key.split('_');
+                    window.showToast('ปิดหีบเรียบร้อย!', `หน่วยเลือกตั้งที่ ${s} (เขต ${z}) นับเสร็จสิ้น`, false); // Notice style
+                });
+
+                newlyUpdated.forEach(key => {
+                    if (!newlyClosed.includes(key)) { 
+                        const [z, s] = key.split('_');
+                        window.showToast('อัปเดตคะแนนใหม่!', `หน่วยเลือกตั้งที่ ${s} (เขต ${z})`);
+                    }
+                });
+            }
+
+            state.mayorCandidates = parsed.mayorCandidates || state.mayorCandidates;
+            state.councilCandidates = parsed.councilCandidates || state.councilCandidates;
+            state.scores = parsed.scores || {};
+            state.lastUpdated = parsed.lastUpdated || state.lastUpdated;
+            state.isVotingOpen = parsed.isVotingOpen !== undefined ? parsed.isVotingOpen : true;
+            state.stationLastUpdated = parsed.stationLastUpdated || {};
+            state.stationSubmitCount = parsed.stationSubmitCount || {};
+            state.stationClosed = parsed.stationClosed || {};
+            state.staffAccounts = parsed.staffAccounts || state.staffAccounts;
+            state.googleSheetUrl = parsed.googleSheetUrl || 'https://script.google.com/macros/s/AKfycbylPl9lPMiMQFSM8aX0rws2jwUqdypwP3OY0jbhv7QoyoLT1gARiUgCVWb4YYoeAuqi/exec';
+        }
+
+        try {
+            const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+            if (firebaseConfig) {
+                const app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+                mainDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'election_db', 'main_state');
+
+                const initAuth = async () => {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                };
+                initAuth();
+
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        isFirebaseReady = true;
+                        onSnapshot(mainDocRef, (snapshot) => {
+                            if (snapshot.exists() && !document.body.classList.contains('is-syncing')) {
+                                triggerNotifsAndMerge(snapshot.data());
+                                if (state.activeTab === 'dashboard' || state.activeTab === 'status' || isInitialLoad) renderApp();
+                                isInitialLoad = false;
+                            } else if (!snapshot.exists()) {
+                                isInitialLoad = false;
+                            }
+                        }, (error) => console.error("Firestore Listen Error:", error));
+                    }
+                });
+            } else { loadLocalData(); }
+        } catch (e) { loadLocalData(); }
+
+        // --- GOOGLE SHEET SYNC ---
+        async function fetchFromGoogleSheet() {
+            if (!state.googleSheetUrl) return false;
+            try {
+                const response = await fetch(state.googleSheetUrl + '?action=load');
+                const result = await response.json();
+                if (result.status === 'success' && result.data) {
+                    const parsed = typeof result.data === 'string' ? JSON.parse(result.data) : result.data;
+                    triggerNotifsAndMerge(parsed);
+                    if (state.activeTab === 'dashboard' || state.activeTab === 'status') renderApp();
+                    return true;
+                }
+            } catch (err) {}
+            return false;
+        }
+
+        function triggerAutoSync() {
+            if (!state.googleSheetUrl) return;
+            if (syncTimeout) clearTimeout(syncTimeout);
+            document.body.classList.add('is-syncing');
+            syncTimeout = setTimeout(async () => {
+                try {
+                    const payload = { action: 'save', state: JSON.stringify(state) };
+                    await fetch(state.googleSheetUrl, { 
+                        method: 'POST', 
+                        mode: 'no-cors',
+                        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                        body: JSON.stringify(payload) 
+                    });
+                } catch(e) { } finally { document.body.classList.remove('is-syncing'); }
+            }, 1500); 
+        }
+
+        function saveData() {
+            if (isFirebaseReady) {
+                setDoc(mainDocRef, { ...state }, { merge: true }).catch(e => console.error(e));
+            }
+            localStorage.setItem('electionNongBuaSalaDataV8', JSON.stringify(state));
+            triggerAutoSync();
+        }
+
+        function initDefaultStaff() {
+            let changed = false;
+            [1, 2].forEach(zone => {
+                getStationsForZone(zone).forEach(s => {
+                    const key = `${zone}_${s}`;
+                    if (!state.staffAccounts[key]) {
+                        state.staffAccounts[key] = { name: `เจ้าหน้าที่ประจำหน่วย ${s}`, pin: "1234" };
+                        changed = true;
+                    }
+                });
+            });
+            if (changed) saveData();
+        }
+
+        // --- HELPERS ---
+        function getStationsForZone(zone) {
+            if (zone === 1) return Array.from({ length: 13 }, (_, i) => i + 1);
+            if (zone === 2) return Array.from({ length: 17 }, (_, i) => i + 14);
+            return [];
+        }
+        function getTotalScore(candidateId) {
+            let total = 0;
+            for (const [key, value] of Object.entries(state.scores)) {
+                if (key.endsWith(`_candidate_${candidateId}`)) total += parseInt(value || 0);
+            }
+            return total;
+        }
+        function getSpecialScore(category, type, zone) {
+            let total = 0;
+            const stations = zone === 0 ? [...getStationsForZone(1), ...getStationsForZone(2)] : getStationsForZone(zone);
+            stations.forEach(s => { total += parseInt(state.scores[`station_${s}_${category}_${type}`] || 0); });
+            return total;
+        }
+        function getMayorScoreByZone(candidateId, zone) {
+            let total = 0;
+            getStationsForZone(zone).forEach(s => { total += parseInt(state.scores[`station_${s}_candidate_${candidateId}`] || 0); });
+            return total;
+        }
+
+        function getStationMayorStats(station) {
+            let valid = 0;
+            state.mayorCandidates.forEach(c => {
+                valid += parseInt(state.scores[`station_${station}_candidate_${c.id}`] || 0);
+            });
+            const invalid = parseInt(state.scores[`station_${station}_mayor_invalid`] || 0);
+            const novote = parseInt(state.scores[`station_${station}_mayor_novote`] || 0);
+            const eligible = parseInt(state.scores[`station_${station}_eligible`] || 0);
+            const turnout = valid + invalid + novote;
+            return { valid, invalid, novote, turnout, eligible };
+        }
+
+        function startTimer() {
+            if (timerInterval) clearInterval(timerInterval);
+            timerInterval = setInterval(() => {
+                if (state.activeTab === 'input' && state.currentUser?.role === 'staff' && state.isVotingOpen) updateTimerUI();
+            }, 1000);
+        }
+
+        function updateTimerUI() {
+            const timerEl = document.getElementById('staff-timer-display');
+            if (!timerEl || !state.isVotingOpen) return;
+            const { zone, station } = state.currentUser;
+            const key = `${zone}_${station}`;
+            if (state.stationClosed[key]) return; 
+
+            const lastTime = state.stationLastUpdated[key];
+            if (!lastTime) {
+                timerEl.innerHTML = `<div class="bg-amber-100 border border-amber-300 text-amber-800 p-2 sm:p-3 rounded-lg sm:rounded-xl font-bold flex items-center justify-center gap-1.5 sm:gap-2 text-xs sm:text-base animate-pulse"><i class="fa-solid fa-play"></i> ยังไม่มีการรายงานผล กรุณารายงานทันที!</div>`;
+                return;
+            }
+            const elapsed = Date.now() - lastTime;
+            const remaining = (10 * 60 * 1000) - elapsed;
+            if (remaining <= 0) {
+                timerEl.innerHTML = `<div class="bg-red-500 border border-red-600 text-white p-2 sm:p-3 rounded-lg sm:rounded-xl font-bold flex items-center justify-center gap-1.5 sm:gap-2 text-xs sm:text-base animate-pulse shadow-md"><i class="fa-solid fa-bell text-lg sm:text-2xl animate-bounce"></i> <span>เลยเวลารายงานผล กรุณาอัปเดตทันที</span></div>`;
+            } else {
+                const mins = Math.floor(remaining / 60000);
+                const secs = Math.floor((remaining % 60000) / 1000);
+                timerEl.innerHTML = `<div class="bg-emerald-50 border border-emerald-200 text-emerald-700 p-2 sm:p-3 rounded-lg sm:rounded-xl font-medium flex items-center justify-center gap-1.5 sm:gap-2 text-xs sm:text-base"><i class="fa-regular fa-clock"></i> รายงานผลรอบถัดไป: <span class="font-bold text-sm sm:text-lg w-10 sm:w-12 text-center">${mins}:${secs.toString().padStart(2, '0')}</span> นาที</div>`;
+            }
+        }
+
+        function startDashboardTimer() {
+            if (dashboardInterval) clearInterval(dashboardInterval);
+            dashboardInterval = setInterval(() => {
+                if (state.activeTab === 'dashboard' || state.activeTab === 'status') fetchFromGoogleSheet();
+            }, 5000);
+        }
+
+        // --- WINDOW EVENTS ---
+        window.changeTab = (tab) => { 
+            if (tab === 'input' && state.currentUser?.role === 'staff') {
+                const sKey = `station_${state.currentUser.station}_eligible`;
+                if (state.scores[sKey] === undefined) {
+                    tab = 'staffInit';
+                }
+            }
+            state.activeTab = tab; 
+            renderApp(); 
+            if (tab === 'input' && state.currentUser?.role === 'staff') startTimer(); 
+            if (tab === 'dashboard' || tab === 'status') startDashboardTimer();
+        };
+
+        window.loginAsStaff = () => {
+            const pinInput = document.getElementById('login-pin').value;
+            const zone = state.loginZone;
+            let matchedStation = null, matchedName = '';
+            for (const s of getStationsForZone(zone)) {
+                const acc = state.staffAccounts[`${zone}_${s}`];
+                if (acc && acc.pin === pinInput) { matchedStation = s; matchedName = acc.name; break; }
+            }
+            if (matchedStation !== null) {
+                state.currentUser = { role: 'staff', zone, station: matchedStation, name: matchedName };
+                
+                if (state.scores[`station_${matchedStation}_eligible`] === undefined) {
+                    state.activeTab = 'staffInit';
+                    renderApp();
+                } else {
+                    state.activeTab = 'input'; 
+                    renderApp(); 
+                    startTimer();
+                }
+            } else { window.showToast('เกิดข้อผิดพลาด', 'รหัสผ่านไม่ถูกต้อง หรือไม่มีหน่วยนี้', true); }
+        };
+
+        window.loginAsAdmin = () => {
+            if (document.getElementById('login-admin-pin').value === '9999') { state.currentUser = { role: 'admin' }; state.activeTab = 'status'; renderApp(); startDashboardTimer(); } 
+            else { window.showToast('เกิดข้อผิดพลาด', 'รหัสผ่านผู้ดูแลระบบไม่ถูกต้อง', true); }
+        };
+        window.logout = () => { state.currentUser = null; state.activeTab = 'dashboard'; if (timerInterval) clearInterval(timerInterval); renderApp(); };
+        window.updateLoginZone = (val) => { state.loginZone = parseInt(val); renderApp(); };
+        window.setLoginMode = (mode) => { state.loginMode = mode; renderApp(); };
+
+        // --- STAFF INIT PROCESS ---
+        window.promptStaffInit = () => {
+            const eligible = document.getElementById('init_eligible').value;
+            if (!eligible || parseInt(eligible) <= 0) {
+                window.showToast('แจ้งเตือน', 'กรุณากรอกจำนวนผู้มีสิทธิ์เลือกตั้งให้ถูกต้อง', true);
+                return;
+            }
+            
+            const { zone, station } = state.currentUser;
+            const correctPin = state.staffAccounts[`${zone}_${station}`].pin;
+
+            const modal = document.createElement('div');
+            modal.className = 'fixed inset-0 z-[100] flex items-center justify-center px-4 bg-slate-900/60 backdrop-blur-sm fade-in print:hidden';
+            modal.innerHTML = `
+                <div class="bg-white rounded-[2rem] p-6 sm:p-8 max-w-sm w-full text-center shadow-2xl transform scale-95 transition-all duration-300">
+                    <div class="w-16 h-16 sm:w-20 sm:h-20 bg-indigo-100 text-indigo-500 rounded-full flex items-center justify-center mx-auto mb-4 sm:mb-5 shadow-inner">
+                        <i class="fa-solid fa-lock text-3xl sm:text-4xl"></i>
+                    </div>
+                    <h3 class="text-xl sm:text-2xl font-black text-slate-800 mb-2">ยืนยันตัวตน</h3>
+                    <p class="text-slate-500 mb-4 sm:mb-6 text-xs sm:text-sm">กรุณากรอกรหัส PIN ประจำหน่วยอีกครั้งเพื่อยืนยันจำนวนผู้มีสิทธิ์: <strong class="text-indigo-600 text-sm sm:text-lg">${eligible} คน</strong></p>
+                    <div class="mb-5 sm:mb-6">
+                        <input type="password" id="confirm-init-pin" class="w-full border-slate-300 rounded-xl shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2 sm:p-3 border bg-slate-50 tracking-widest font-bold text-center text-xl sm:text-2xl" placeholder="••••" />
+                    </div>
+                    <div class="flex gap-2 sm:gap-3">
+                        <button onclick="this.closest('.fixed').remove()" class="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold py-2.5 sm:py-3 rounded-xl transition-all text-sm sm:text-base">ยกเลิก</button>
+                        <button id="btn-confirm-init" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 sm:py-3 rounded-xl transition-all shadow-md text-sm sm:text-base">ยืนยัน</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            setTimeout(() => modal.querySelector('div').classList.replace('scale-95', 'scale-100'), 10);
+            
+            setTimeout(() => document.getElementById('confirm-init-pin').focus(), 100);
+
+            document.getElementById('btn-confirm-init').onclick = () => {
+                const enteredPin = document.getElementById('confirm-init-pin').value;
+                if (enteredPin === correctPin) {
+                    modal.remove();
+                    state.scores[`station_${station}_eligible`] = parseInt(eligible);
+                    saveData();
+                    window.showToast('สำเร็จ', 'บันทึกข้อมูลหน่วยเริ่มต้นเรียบร้อยแล้ว');
+                    state.activeTab = 'input';
+                    renderApp();
+                    startTimer();
+                } else {
+                    window.showToast('เกิดข้อผิดพลาด', 'รหัส PIN ไม่ถูกต้อง', true);
+                }
+            };
+        };
+
+        window.saveStaffScores = (isFinal = false) => {
+            // PROFESSIONAL VALIDATION: Check if turnout exceeds eligible voters before saving
+            const { station } = state.currentUser;
+            const eligibleVoters = parseInt(document.getElementById('input_eligible')?.value || 0);
+            
+            let mTotal = 0; 
+            state.mayorCandidates.forEach(c => mTotal += parseInt(document.getElementById(`input_m_${c.id}`)?.value || 0));
+            const mInvalid = parseInt(document.getElementById('input_m_invalid')?.value || 0);
+            const mNoVote = parseInt(document.getElementById('input_m_novote')?.value || 0);
+            const mTurnout = mTotal + mInvalid + mNoVote;
+
+            if (isFinal) {
+                if (eligibleVoters <= 0) {
+                    window.showToast('ข้อมูลไม่ครบถ้วน', 'กรุณากรอกจำนวนผู้มีสิทธิ์เลือกตั้งให้ถูกต้อง', true);
+                    return;
+                }
+                if (mTurnout > eligibleVoters) {
+                    window.showConfirmModal(
+                        'ข้อมูลขัดแย้ง', 
+                        `ยอดผู้มาใช้สิทธิ์รวม (${mTurnout} คน) มากกว่าผู้มีสิทธิ์เลือกตั้ง (${eligibleVoters} คน)<br>กรุณาตรวจสอบความถูกต้องอีกครั้งก่อนปิดหีบ`,
+                        'เข้าใจแล้ว',
+                        'bg-slate-800 hover:bg-slate-900',
+                        () => {} // Just close the modal
+                    );
+                    return; // Block saving
+                }
+
+                window.showConfirmModal(
+                    'ยืนยันปิดหีบ?', 
+                    'หากยืนยันแล้ว จะไม่สามารถกลับมาแก้ไขคะแนนของหน่วยนี้ได้อีก!',
+                    'ยืนยันปิดหีบ',
+                    'bg-rose-600 hover:bg-rose-700',
+                    () => window.executeSaveStaffScores(true)
+                );
+            } else {
+                // If it's just a draft save, we can warn but still let them save it
+                if (mTurnout > eligibleVoters && eligibleVoters > 0) {
+                    window.showToast('แจ้งเตือน (บันทึกชั่วคราว)', 'ยอดผู้มาใช้สิทธิ์รวมเกินกว่าผู้มีสิทธิ์เลือกตั้ง กรุณาตรวจสอบซ้ำ', true);
+                }
+                window.executeSaveStaffScores(false);
+            }
+        };
+
+        window.executeSaveStaffScores = async (isFinal) => {
+            if (!state.isVotingOpen) return; 
+
+            const { zone, station } = state.currentUser;
+            const key = `${zone}_${station}`;
+            
+            const btnSave = document.getElementById('btn-save-staff');
+            const btnClose = document.getElementById('btn-close-station');
+            if(btnSave) { btnSave.disabled = true; btnSave.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> บันทึก...'; }
+            if(btnClose) { btnClose.disabled = true; }
+
+            if (state.googleSheetUrl) {
+                try {
+                    const response = await fetch(state.googleSheetUrl + '?action=load');
+                    const result = await response.json();
+                    if (result.status === 'success' && result.data) {
+                        const parsed = typeof result.data === 'string' ? JSON.parse(result.data) : result.data;
+                        state.scores = { ...state.scores, ...(parsed.scores || {}) };
+                        state.stationLastUpdated = { ...state.stationLastUpdated, ...(parsed.stationLastUpdated || {}) };
+                        state.stationSubmitCount = { ...state.stationSubmitCount, ...(parsed.stationSubmitCount || {}) };
+                        state.stationClosed = { ...state.stationClosed, ...(parsed.stationClosed || {}) };
+                        state.staffAccounts = { ...state.staffAccounts, ...(parsed.staffAccounts || {}) };
+                        state.mayorCandidates = parsed.mayorCandidates || state.mayorCandidates;
+                        state.councilCandidates = parsed.councilCandidates || state.councilCandidates;
+                    }
+                } catch(e) { console.error("Sync merge error", e); }
+            }
+
+            let updatedScores = { ...state.scores };
+            
+            updatedScores[`station_${station}_eligible`] = parseInt(document.getElementById('input_eligible')?.value || 0);
+
+            state.mayorCandidates.forEach(c => { const el = document.getElementById(`input_m_${c.id}`); if(el) updatedScores[`station_${station}_candidate_${c.id}`] = parseInt(el.value || 0); });
+            state.councilCandidates[zone].forEach(c => { const el = document.getElementById(`input_c_${c.id}`); if(el) updatedScores[`station_${station}_candidate_${c.id}`] = parseInt(el.value || 0); });
+            updatedScores[`station_${station}_mayor_novote`] = parseInt(document.getElementById('input_m_novote')?.value || 0);
+            updatedScores[`station_${station}_mayor_invalid`] = parseInt(document.getElementById('input_m_invalid')?.value || 0);
+            updatedScores[`station_${station}_council_novote`] = parseInt(document.getElementById('input_c_novote')?.value || 0);
+            updatedScores[`station_${station}_council_invalid`] = parseInt(document.getElementById('input_c_invalid')?.value || 0);
+            
+            state.scores = updatedScores;
+            state.stationLastUpdated[key] = Date.now();
+            previousUpdateTimes[key] = state.stationLastUpdated[key]; 
+            state.stationSubmitCount[key] = (state.stationSubmitCount[key] || 0) + 1;
+            
+            if (isFinal) {
+                state.stationClosed[key] = true;
+                previousClosedStatus[key] = true;
+            }
+
+            const nowTime = new Date().toLocaleTimeString('th-TH', {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+            state.lastUpdated = new Date().toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric' }) + ' ' + nowTime;
+            
+            saveData(); 
+            
+            window.showStaffAlert(state.stationSubmitCount[key], nowTime, isFinal);
+            renderApp(); updateTimerUI();
+        };
+
+        // --- ADMIN CONTROLS ---
+        window.toggleVotingStatus = () => {
+            state.isVotingOpen = !state.isVotingOpen;
+            saveData();
+            renderApp();
+            const msg = state.isVotingOpen ? 'เปิดระบบรับคะแนนเรียบร้อยแล้ว' : 'ปิดระบบรับคะแนนชั่วคราวแล้ว';
+            window.showToast('สถานะระบบ', msg);
+        };
+
+        window.clearVotingData = () => {
+            window.showConfirmModal(
+                'ล้างคะแนนทั้งหมด?',
+                'ข้อมูลคะแนนที่ถูกล้างจะไม่สามารถกู้คืนได้ (รายชื่อและรหัสผ่านจะไม่หายไป)',
+                'ล้างข้อมูล',
+                'bg-rose-600 hover:bg-rose-700',
+                () => {
+                    state.scores = {};
+                    state.stationLastUpdated = {};
+                    state.stationSubmitCount = {};
+                    state.stationClosed = {};
+                    state.lastUpdated = null;
+                    saveData();
+                    window.showToast('สำเร็จ', 'ล้างข้อมูลคะแนนทั้งหมดเรียบร้อยแล้ว');
+                    renderApp();
+                }
+            );
+        };
+
+        window.updateCandidateName = (type, id, value, zone = 1) => {
+            const list = type === 'mayor' ? state.mayorCandidates : state.councilCandidates[zone];
+            const idx = list.findIndex(c => c.id === id);
+            if (idx > -1) { list[idx].name = value; saveData(); }
+        };
+        window.updateStaffSetting = (key, field, value) => { if(state.staffAccounts[key]) { state.staffAccounts[key][field] = value; saveData(); } };
+        window.updateGoogleSheetUrl = (val) => { state.googleSheetUrl = val; saveData(); };
+        window.syncToGoogleSheet = async () => {
+            if (!state.googleSheetUrl) return window.showToast('แจ้งเตือน', 'กรุณากรอก URL ก่อนครับ', true);
+            const btn = document.getElementById('btn-sync-sheet');
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> กำลังอัปเดตข้อมูล...';
+            triggerAutoSync();
+            setTimeout(() => { 
+                btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-up"></i> บังคับบันทึกข้อมูลไปชีตทันที'; 
+                window.showToast('สำเร็จ', 'ส่งคำสั่งบันทึกข้อมูลเรียบร้อยแล้ว'); 
+            }, 1500);
+        };
+
+        // --- RENDER FUNCTIONS ---
+        function renderNav() {
+            let tabs = [{ id: 'dashboard', icon: 'fa-desktop', text: 'มอนิเตอร์' }];
+            if (!state.currentUser) tabs.push({ id: 'login', icon: 'fa-right-to-bracket', text: 'เข้าสู่ระบบ' });
+            else if (state.currentUser.role === 'staff') tabs.push({ id: 'input', icon: 'fa-pen-to-square', text: 'กรอกคะแนน' });
+            else if (state.currentUser.role === 'admin') {
+                tabs.push({ id: 'status', icon: 'fa-tower-broadcast', text: 'สถานะหน่วย' });
+                tabs.push({ id: 'settings', icon: 'fa-users-gear', text: 'ตั้งค่าระบบ' });
+            }
+
+            let desktopNavHtml = tabs.map(t => {
+                let isActive = state.activeTab === t.id || (state.activeTab === 'staffInit' && t.id === 'input');
+                return `<button onclick="changeTab('${t.id}')" class="flex items-center gap-2 px-3 lg:px-4 py-1.5 rounded-lg text-xs lg:text-sm font-bold transition-all ${isActive ? 'bg-indigo-50 text-indigo-700 shadow-sm' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'}"><i class="fa-solid ${t.icon}"></i> <span>${t.text}</span></button>`;
+            }).join('');
+            if (state.currentUser) desktopNavHtml += `<div class="h-4 w-px bg-slate-200 mx-1 lg:mx-2"></div><button onclick="logout()" class="flex items-center gap-1.5 lg:gap-2 px-2 lg:px-3 py-1.5 rounded-lg text-xs lg:text-sm font-bold text-red-600 hover:bg-red-50 transition-all"><i class="fa-solid fa-power-off"></i> <span class="hidden sm:inline">ออกระบบ</span></button>`;
+            document.getElementById('desktop-nav').innerHTML = desktopNavHtml;
+
+            let mobileNavHtml = tabs.map(t => {
+                let isActive = state.activeTab === t.id || (state.activeTab === 'staffInit' && t.id === 'input');
+                return `<div onclick="changeTab('${t.id}')" class="flex flex-col items-center justify-center gap-1 w-full cursor-pointer transition-colors p-1 rounded-lg ${isActive ? 'text-indigo-600 font-bold bg-indigo-50/50' : 'text-slate-500'}"><i class="fa-solid ${t.icon} text-lg mb-0.5"></i><span class="text-[10px]">${t.text}</span></div>`;
+            }).join('');
+            if (state.currentUser) mobileNavHtml += `<div onclick="logout()" class="flex flex-col items-center justify-center gap-1 w-full cursor-pointer transition-colors p-1 rounded-lg text-red-500"><i class="fa-solid fa-power-off text-lg mb-0.5"></i><span class="text-[10px]">ออกระบบ</span></div>`;
+            document.getElementById('mobile-nav').innerHTML = mobileNavHtml;
+        }
+
+        // ==========================================
+        // 16:9 FULLSCREEN DASHBOARD RENDERER
+        // ==========================================
+        function renderDashboard() {
+            const mayorCandidatesSorted = [...state.mayorCandidates].map(c => ({ ...c, score: getTotalScore(c.id) })).sort((a, b) => a.number - b.number);
+            const m1 = mayorCandidatesSorted[0], m2 = mayorCandidatesSorted[1];
+            const totalMayorVotes = (m1?.score || 0) + (m2?.score || 0);
+            const p1 = totalMayorVotes > 0 ? ((m1.score / totalMayorVotes) * 100).toFixed(1) : "0";
+            const p2 = totalMayorVotes > 0 ? ((m2.score / totalMayorVotes) * 100).toFixed(1) : "0";
+
+            const mayorMax = Math.max(m1?.score || 0, m2?.score || 0);
+            const m1Leading = m1 && m1.score > 0 && m1.score === mayorMax && m1.score > (m2?.score || 0);
+            const m2Leading = m2 && m2.score > 0 && m2.score === mayorMax && m2.score > (m1?.score || 0);
+
+            const councilZone1Results = state.councilCandidates[1].map(c => ({ ...c, score: getTotalScore(c.id) }));
+            const maxCouncil1Score = Math.max(...councilZone1Results.map(r => r.score), 1);
+            const totalCouncil1 = councilZone1Results.reduce((sum, c) => sum + c.score, 0);
+
+            const councilZone2Results = state.councilCandidates[2].map(c => ({ ...c, score: getTotalScore(c.id) }));
+            const maxCouncil2Score = Math.max(...councilZone2Results.map(r => r.score), 1);
+            const totalCouncil2 = councilZone2Results.reduce((sum, c) => sum + c.score, 0);
+
+            const mayorNoVote = getSpecialScore('mayor', 'novote', 0);
+            const mayorInvalid = getSpecialScore('mayor', 'invalid', 0);
+            
+            const m1Z1 = m1 ? getMayorScoreByZone(m1.id, 1) : 0;
+            const m2Z1 = m2 ? getMayorScoreByZone(m2.id, 1) : 0;
+            const tZ1 = m1Z1 + m2Z1;
+            const p1Z1 = tZ1 > 0 ? ((m1Z1/tZ1)*100).toFixed(1) : "0";
+            const p2Z1 = tZ1 > 0 ? ((m2Z1/tZ1)*100).toFixed(1) : "0";
+
+            const m1Z2 = m1 ? getMayorScoreByZone(m1.id, 2) : 0;
+            const m2Z2 = m2 ? getMayorScoreByZone(m2.id, 2) : 0;
+            const tZ2 = m1Z2 + m2Z2;
+            const p1Z2 = tZ2 > 0 ? ((m1Z2/tZ2)*100).toFixed(1) : "0";
+            const p2Z2 = tZ2 > 0 ? ((m2Z2/tZ2)*100).toFixed(1) : "0";
+            
+            let html = `
+                <div class="flex flex-col h-[calc(100vh-6rem)] lg:h-[calc(100vh-5rem)] min-h-[700px] fade-in gap-3 lg:gap-4 pb-2 w-full">
+                    
+                    <div class="flex flex-col sm:flex-row justify-between items-center flex-shrink-0 bg-white p-3 lg:p-4 rounded-2xl shadow-sm border border-slate-200">
+                        <div class="flex items-center gap-3 lg:gap-4">
+                            <div class="p-2.5 bg-gradient-to-br from-indigo-500 to-purple-600 text-white rounded-xl shadow-sm"><i class="fa-solid fa-flag text-xl sm:text-2xl lg:text-3xl"></i></div>
+                            <div>
+                                <h2 class="text-lg sm:text-xl lg:text-3xl font-extrabold text-slate-800 leading-tight tracking-tight">ผลการนับคะแนนอย่างไม่เป็นทางการ</h2>
+                                <p class="text-xs sm:text-sm lg:text-base font-bold text-indigo-600 mt-0.5">เทศบาลตำบลหนองบัวศาลา อ.เมือง จ.นครราชสีมา</p>
+                            </div>
+                        </div>
+                        <div class="mt-2 sm:mt-0 flex items-center gap-2 sm:gap-3 print:hidden">
+                            ${!state.isVotingOpen ? '<span class="px-2 sm:px-3 py-1 sm:py-1.5 bg-rose-100 text-rose-600 rounded-lg text-[10px] sm:text-xs font-bold border border-rose-200 animate-pulse"><i class="fa-solid fa-lock"></i> ปิดระบบรับคะแนน</span>' : ''}
+                            ${state.lastUpdated ? 
+                            `<span class="inline-flex items-center gap-1.5 px-3 sm:px-4 py-1.5 sm:py-2 bg-emerald-50 text-emerald-700 rounded-xl text-xs sm:text-sm lg:text-base font-bold border border-emerald-200 shadow-sm"><i class="fa-solid fa-clock-rotate-left"></i> อัปเดต: ${state.lastUpdated}</span>` 
+                            : '<span class="inline-flex items-center gap-1.5 px-3 sm:px-4 py-1.5 sm:py-2 bg-slate-100 text-slate-500 rounded-xl text-xs sm:text-sm font-bold border border-slate-200">ยังไม่มีข้อมูลคะแนน</span>'}
+                            
+                            <!-- NEW: Print Button -->
+                            <button onclick="window.print()" class="px-2 sm:px-3 py-1 sm:py-1.5 bg-slate-800 text-white rounded-lg text-[10px] sm:text-xs font-bold shadow-sm hover:bg-slate-700 transition-colors hidden lg:flex items-center gap-1.5">
+                                <i class="fa-solid fa-print"></i> พิมพ์รายงาน
+                            </button>
+                        </div>
+                    </div>
+            `;
+
+            if (m1 && m2) {
+                html += `
+                    <div class="bg-white rounded-2xl shadow-md border border-slate-200 overflow-hidden relative flex-shrink-0 flex flex-col lg:flex-row">
+                        <div class="absolute top-0 left-0 w-full lg:w-1/2 h-1.5 bg-blue-500 z-20"></div>
+                        <div class="absolute top-0 right-0 w-full lg:w-1/2 h-1.5 bg-orange-500 z-20"></div>
+                        
+                        <div class="w-full lg:w-[60%] p-4 lg:p-6 flex flex-col relative border-b lg:border-b-0 lg:border-r border-slate-100">
+                            <div class="absolute top-0 left-1/2 transform -translate-x-1/2 bg-slate-800 text-white text-[10px] lg:text-xs font-bold px-4 py-1 rounded-b-xl shadow-md z-30 tracking-widest uppercase">ผู้สมัครนายกเทศมนตรี</div>
+                            
+                            <div class="flex justify-between items-center mt-3 lg:mt-5 relative">
+                                <div class="w-5/12 text-center z-10 relative">
+                                    <div class="w-14 h-14 sm:w-16 sm:h-16 lg:w-20 lg:h-20 mx-auto bg-gradient-to-br from-yellow-400 to-blue-500 text-white rounded-full flex items-center justify-center text-2xl sm:text-3xl lg:text-4xl font-black shadow-lg border-[3px] border-white relative">
+                                        ${m1Leading ? '<i class="fa-solid fa-crown absolute -top-3 sm:-top-4 -right-2 sm:-right-3 text-3xl sm:text-4xl text-yellow-300 drop-shadow-[0_2px_2px_rgba(0,0,0,0.5)] transform rotate-[15deg] z-30"></i>' : ''}
+                                        ${m1.number}
+                                    </div>
+                                    <h4 class="mt-1.5 sm:mt-2 font-bold text-slate-800 text-xs sm:text-sm lg:text-base truncate px-1">${m1.name}</h4>
+                                    <div class="text-2xl sm:text-3xl lg:text-5xl font-black text-blue-600 mt-0.5 tracking-tighter drop-shadow-sm">${m1.score.toLocaleString()}</div>
+                                    <div class="text-xs sm:text-sm font-bold text-slate-500 bg-slate-50 inline-block px-2 sm:px-3 rounded-full mt-1 border border-slate-100">${p1}%</div>
+                                </div>
+
+                                <div class="absolute left-1/2 top-1/2 transform -translate-x-1/2 -translate-y-1/2 z-20 -mt-2 lg:mt-0">
+                                    <div class="bg-slate-800 text-white font-black text-lg sm:text-xl lg:text-2xl italic w-10 h-10 sm:w-12 sm:h-12 lg:w-14 lg:h-14 flex items-center justify-center rounded-full shadow-xl border-[2px] sm:border-[3px] border-white">VS</div>
+                                </div>
+
+                                <div class="w-5/12 text-center z-10 relative">
+                                    <div class="w-14 h-14 sm:w-16 sm:h-16 lg:w-20 lg:h-20 mx-auto bg-gradient-to-br from-orange-400 to-slate-500 text-white rounded-full flex items-center justify-center text-2xl sm:text-3xl lg:text-4xl font-black shadow-lg border-[3px] border-white relative">
+                                        ${m2Leading ? '<i class="fa-solid fa-crown absolute -top-3 sm:-top-4 -right-2 sm:-right-3 text-3xl sm:text-4xl text-yellow-400 drop-shadow-[0_2px_2px_rgba(0,0,0,0.5)] transform rotate-[15deg] z-30"></i>' : ''}
+                                        ${m2.number}
+                                    </div>
+                                    <h4 class="mt-1.5 sm:mt-2 font-bold text-slate-800 text-xs sm:text-sm lg:text-base truncate px-1">${m2.name}</h4>
+                                    <div class="text-2xl sm:text-3xl lg:text-5xl font-black text-orange-500 mt-0.5 tracking-tighter drop-shadow-sm">${m2.score.toLocaleString()}</div>
+                                    <div class="text-xs sm:text-sm font-bold text-slate-500 bg-slate-50 inline-block px-2 sm:px-3 rounded-full mt-1 border border-slate-100">${p2}%</div>
+                                </div>
+                            </div>
+
+                            <div class="mt-4 sm:mt-5 lg:mt-6 space-y-2 sm:space-y-3 w-full px-2 lg:px-8">
+                                <div class="flex items-center gap-2 sm:gap-3">
+                                    <div class="w-6 h-6 sm:w-8 sm:h-8 rounded-lg bg-blue-50 text-blue-700 flex items-center justify-center font-black text-sm sm:text-xl shadow-sm border border-blue-200 shrink-0">${m1.number}</div>
+                                    <div class="flex-1 h-4 sm:h-6 lg:h-8 bg-slate-100 rounded-full overflow-hidden shadow-inner border border-slate-200 relative">
+                                        <div class="h-full bg-gradient-to-r from-yellow-400 to-blue-500 transition-all duration-1000 flex items-center pl-2 sm:pl-3" style="width: ${p1}%"></div>
+                                    </div>
+                                    <span class="w-16 sm:w-20 lg:w-28 text-right font-black text-blue-600 text-base sm:text-xl lg:text-2xl shrink-0">${m1.score.toLocaleString()}</span>
+                                </div>
+                                <div class="flex items-center gap-2 sm:gap-3">
+                                    <div class="w-6 h-6 sm:w-8 sm:h-8 rounded-lg bg-orange-50 text-orange-700 flex items-center justify-center font-black text-sm sm:text-xl shadow-sm border border-orange-200 shrink-0">${m2.number}</div>
+                                    <div class="flex-1 h-4 sm:h-6 lg:h-8 bg-slate-100 rounded-full overflow-hidden shadow-inner border border-slate-200 relative">
+                                        <div class="h-full bg-gradient-to-r from-slate-500 to-orange-400 transition-all duration-1000 flex items-center pl-2 sm:pl-3" style="width: ${p2}%"></div>
+                                    </div>
+                                    <span class="w-16 sm:w-20 lg:w-28 text-right font-black text-orange-600 text-base sm:text-xl lg:text-2xl shrink-0">${m2.score.toLocaleString()}</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="w-full lg:w-[40%] bg-slate-50/50 p-4 lg:p-6 flex flex-col justify-center gap-3 lg:gap-4 relative">
+                            <div class="absolute right-0 bottom-0 text-8xl sm:text-[120px] text-slate-200 opacity-30 pointer-events-none -rotate-12 translate-x-4 translate-y-4 print:hidden"><i class="fa-solid fa-chart-simple"></i></div>
+                            
+                            <div class="bg-white rounded-xl p-2 sm:p-3 lg:p-4 border border-slate-200 shadow-sm relative z-10 hover:shadow-md transition-shadow">
+                                <h5 class="text-[11px] lg:text-xs font-bold text-slate-500 mb-1.5 sm:mb-2 flex justify-between items-center">
+                                    <span class="bg-slate-100 px-1.5 sm:px-2 py-0.5 rounded text-slate-600"><i class="fa-solid fa-chart-bar mr-1"></i> เขต 1</span>
+                                    <span class="font-medium bg-slate-50 px-1.5 sm:px-2 py-0.5 rounded border border-slate-100">รวม <span class="font-bold text-slate-700">${tZ1.toLocaleString()}</span> เสียง</span>
+                                </h5>
+                                <div class="flex justify-between text-[10px] sm:text-xs lg:text-sm font-bold mb-1 sm:mb-1.5 px-1">
+                                    <span class="text-blue-600 flex items-center gap-1">เบอร์ ${m1.number} <i class="fa-solid fa-caret-right text-[8px] sm:text-[10px] text-slate-300"></i> ${m1Z1.toLocaleString()}</span>
+                                    <span class="text-orange-600 flex items-center gap-1">${m2Z1.toLocaleString()} <i class="fa-solid fa-caret-left text-[8px] sm:text-[10px] text-slate-300"></i> เบอร์ ${m2.number}</span>
+                                </div>
+                                <div class="h-1.5 sm:h-2 w-full bg-slate-100 rounded-full flex overflow-hidden shadow-inner">
+                                    <div class="h-full bg-blue-500" style="width: ${p1Z1}%"></div>
+                                    <div class="h-full bg-orange-400" style="width: ${p2Z1}%"></div>
+                                </div>
+                            </div>
+                            
+                            <div class="bg-white rounded-xl p-2 sm:p-3 lg:p-4 border border-slate-200 shadow-sm relative z-10 hover:shadow-md transition-shadow">
+                                <h5 class="text-[11px] lg:text-xs font-bold text-slate-500 mb-1.5 sm:mb-2 flex justify-between items-center">
+                                    <span class="bg-slate-100 px-1.5 sm:px-2 py-0.5 rounded text-slate-600"><i class="fa-solid fa-chart-bar mr-1"></i> เขต 2</span>
+                                    <span class="font-medium bg-slate-50 px-1.5 sm:px-2 py-0.5 rounded border border-slate-100">รวม <span class="font-bold text-slate-700">${tZ2.toLocaleString()}</span> เสียง</span>
+                                </h5>
+                                <div class="flex justify-between text-[10px] sm:text-xs lg:text-sm font-bold mb-1 sm:mb-1.5 px-1">
+                                    <span class="text-blue-600 flex items-center gap-1">เบอร์ ${m1.number} <i class="fa-solid fa-caret-right text-[8px] sm:text-[10px] text-slate-300"></i> ${m1Z2.toLocaleString()}</span>
+                                    <span class="text-orange-600 flex items-center gap-1">${m2Z2.toLocaleString()} <i class="fa-solid fa-caret-left text-[8px] sm:text-[10px] text-slate-300"></i> เบอร์ ${m2.number}</span>
+                                </div>
+                                <div class="h-1.5 sm:h-2 w-full bg-slate-100 rounded-full flex overflow-hidden shadow-inner">
+                                    <div class="h-full bg-blue-500" style="width: ${p1Z2}%"></div>
+                                    <div class="h-full bg-orange-400" style="width: ${p2Z2}%"></div>
+                                </div>
+                            </div>
+                            
+                            <div class="flex justify-center gap-2 sm:gap-3 lg:gap-4 mt-1 text-[10px] sm:text-xs lg:text-sm font-bold text-slate-600 relative z-10">
+                                <span class="bg-white px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg border border-slate-200 shadow-sm flex items-center gap-1 sm:gap-1.5"><i class="fa-solid fa-ban text-slate-400"></i> ไม่ประสงค์: <span class="text-slate-800 text-xs sm:text-base">${mayorNoVote.toLocaleString()}</span></span>
+                                <span class="bg-white px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg border border-red-200 shadow-sm flex items-center gap-1 sm:gap-1.5 text-red-600"><i class="fa-solid fa-triangle-exclamation"></i> บัตรเสีย: <span class="text-red-700 text-xs sm:text-base">${mayorInvalid.toLocaleString()}</span></span>
+                            </div>
+                        </div>
+
+                    </div>
+                `;
+            }
+
+            const renderCouncilZone = (zoneName, zoneNum, resultsOriginal, totalZoneVotes, colorTheme) => {
+                const cNoVote = getSpecialScore('council', 'novote', zoneNum);
+                const cInvalid = getSpecialScore('council', 'invalid', zoneNum);
+
+                const sortedByScore = [...resultsOriginal].sort((a, b) => b.score - a.score);
+                const top6Ids = new Set();
+                sortedByScore.forEach((c, idx) => { if (idx < 6 && c.score > 0) top6Ids.add(c.id); });
+                
+                const sortedByNumber = [...resultsOriginal].sort((a, b) => a.number - b.number);
+
+                let sectionHtml = `
+                    <div class="${colorTheme.containerBg} rounded-2xl shadow-md border ${colorTheme.mainBorder} overflow-hidden flex flex-col relative flex-1 min-h-0 transition-shadow hover:shadow-lg">
+                        <div class="absolute -right-4 sm:-right-8 -bottom-4 sm:-bottom-8 text-8xl sm:text-[150px] opacity-[0.03] ${colorTheme.iconBgColor} pointer-events-none rotate-[-15deg] print:hidden"><i class="${colorTheme.bgIcon}"></i></div>
+                        
+                        <div class="bg-gradient-to-r ${colorTheme.headerBg} p-2 sm:p-2.5 lg:p-3 border-b ${colorTheme.headerBorder} flex items-center justify-between relative z-10">
+                            <div class="flex items-center gap-2 sm:gap-3 px-1">
+                                <div class="p-1 sm:p-1.5 ${colorTheme.iconWrapperBg} rounded-lg shadow-inner"><i class="${colorTheme.mainIcon} text-base sm:text-lg lg:text-xl text-white"></i></div>
+                                <h3 class="text-sm sm:text-base lg:text-xl font-black ${colorTheme.titleText} tracking-wide">ส.ท. ${zoneName}</h3>
+                            </div>
+                            <div class="flex items-center gap-2 sm:gap-3">
+                                <span class="text-[8px] sm:text-[10px] lg:text-xs font-bold ${colorTheme.totalVotesText} ${colorTheme.totalVotesBg} px-1.5 sm:px-2.5 py-0.5 sm:py-1 rounded-lg border shadow-sm backdrop-blur-sm">รวม <span class="text-xs sm:text-sm lg:text-base ml-1">${totalZoneVotes.toLocaleString()}</span></span>
+                            </div>
+                        </div>
+                        
+                        <div class="p-2 sm:p-3 lg:p-4 flex-1 flex flex-col justify-center items-center relative z-10 bg-white/40 overflow-y-auto">
+                            <div class="flex flex-wrap gap-1.5 sm:gap-2 lg:gap-3 justify-center items-center w-full sm:max-w-[95%]">
+                `;
+                
+                sortedByNumber.forEach(c => {
+                    const isElected = top6Ids.has(c.id);
+                    
+                    let theme = {};
+                    if (c.number >= 1 && c.number <= 6) {
+                        theme = {
+                            border: 'border-blue-400 shadow-blue-200 ring-2 ring-blue-50',
+                            numberText: 'text-blue-600',
+                            scoreBg: 'bg-gradient-to-r from-yellow-100 to-blue-100 text-blue-800 border-blue-200',
+                            inactiveBorder: 'border-blue-200 opacity-70',
+                            inactiveText: 'text-blue-400'
+                        };
+                    } else if (c.number >= 7 && c.number <= 12) {
+                        theme = {
+                            border: 'border-orange-400 shadow-orange-200 ring-2 ring-orange-50',
+                            numberText: 'text-orange-600',
+                            scoreBg: 'bg-gradient-to-r from-orange-100 to-slate-200 text-orange-800 border-orange-200',
+                            inactiveBorder: 'border-orange-200 opacity-70',
+                            inactiveText: 'text-orange-400'
+                        };
+                    } else {
+                        theme = {
+                            border: 'border-purple-400 shadow-purple-200 ring-2 ring-purple-50',
+                            numberText: 'text-purple-600',
+                            scoreBg: 'bg-gradient-to-r from-purple-100 to-fuchsia-100 text-purple-800 border-purple-200',
+                            inactiveBorder: 'border-purple-200 opacity-70',
+                            inactiveText: 'text-purple-400'
+                        };
+                    }
+
+                    if (isElected) {
+                        sectionHtml += `
+                            <div class="w-[3rem] h-[3.5rem] sm:w-[3.5rem] sm:h-[4rem] md:w-[4rem] md:h-[4.5rem] lg:w-[4.5rem] lg:h-[5.5rem] flex flex-col items-center justify-center bg-white border-[2px] sm:border-[3px] ${theme.border} rounded-lg sm:rounded-xl shadow-md transform hover:scale-105 transition-all relative">
+                                <div class="absolute -top-2 -right-2 sm:-top-3 sm:-right-2.5 lg:-top-3.5 lg:-right-2.5 z-20 drop-shadow-md transform rotate-[15deg]"><i class="fa-solid fa-trophy text-yellow-400 text-xs sm:text-base lg:text-xl drop-shadow-[0_2px_2px_rgba(0,0,0,0.3)]"></i></div>
+                                <span class="text-base sm:text-xl md:text-2xl lg:text-4xl font-black ${theme.numberText} leading-none mt-0.5 sm:mt-1">${c.number}</span>
+                                <span class="text-[8px] sm:text-[9px] md:text-[10px] lg:text-[12px] font-extrabold mt-0.5 sm:mt-1 ${theme.scoreBg} px-1 sm:px-1.5 rounded w-[90%] text-center truncate shadow-inner border border-slate-200">${c.score.toLocaleString()}</span>
+                            </div>
+                        `;
+                    } else {
+                        sectionHtml += `
+                            <div class="w-[3rem] h-[3.5rem] sm:w-[3.5rem] sm:h-[4rem] md:w-[4rem] md:h-[4.5rem] lg:w-[4.5rem] lg:h-[5.5rem] flex flex-col items-center justify-center bg-white/80 border-[1px] ${theme.inactiveBorder} rounded-lg sm:rounded-xl hover:opacity-100 transition-all cursor-default relative">
+                                <span class="text-base sm:text-xl md:text-2xl lg:text-4xl font-bold ${theme.inactiveText} leading-none mt-0.5 sm:mt-1">${c.number}</span>
+                                <span class="text-[8px] sm:text-[9px] md:text-[10px] lg:text-[12px] font-medium text-slate-500 mt-0.5 sm:mt-1 px-1 w-[90%] text-center truncate">${c.score.toLocaleString()}</span>
+                            </div>
+                        `;
+                    }
+                });
+
+                sectionHtml += `
+                            </div>
+                        </div>
+
+                        <div class="p-1.5 sm:p-2 bg-white/80 border-t ${colorTheme.mainBorder} relative z-10 flex justify-center gap-2 sm:gap-4 text-[8px] sm:text-[10px] lg:text-xs font-bold text-slate-600 backdrop-blur-sm">
+                            <span class="flex items-center gap-1 sm:gap-1.5"><i class="fa-solid fa-ban text-slate-400"></i> ไม่ประสงค์: <span class="text-slate-800 text-xs sm:text-sm lg:text-base">${cNoVote.toLocaleString()}</span></span>
+                            <span class="flex items-center gap-1 sm:gap-1.5 text-red-600"><i class="fa-solid fa-triangle-exclamation"></i> บัตรเสีย: <span class="text-red-700 text-xs sm:text-sm lg:text-base">${cInvalid.toLocaleString()}</span></span>
+                        </div>
+                    </div>
+                `;
+                return sectionHtml;
+            };
+
+            html += `<div class="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4 lg:gap-6 flex-1 min-h-0 w-full mt-1">`;
+            
+            html += renderCouncilZone('เขตเลือกตั้งที่ 1', 1, councilZone1Results, totalCouncil1, { 
+                containerBg: 'bg-slate-50/60', mainBorder: 'border-slate-200', iconBgColor: 'text-slate-400', bgIcon: 'fa-solid fa-users-viewfinder', 
+                headerBg: 'from-slate-600 to-slate-700', headerBorder: 'border-slate-800', iconWrapperBg: 'bg-white/20 backdrop-blur-md', iconBorder: 'border-white/30', mainIcon: 'fa-solid fa-users', 
+                titleText: 'text-white', subtitleText: 'text-slate-200', totalVotesText: 'text-white', totalVotesBg: 'bg-slate-900/40 border-slate-400/30'
+            });
+
+            html += renderCouncilZone('เขตเลือกตั้งที่ 2', 2, councilZone2Results, totalCouncil2, { 
+                containerBg: 'bg-slate-50/60', mainBorder: 'border-slate-200', iconBgColor: 'text-slate-400', bgIcon: 'fa-solid fa-users-rectangle', 
+                headerBg: 'from-slate-600 to-slate-700', headerBorder: 'border-slate-800', iconWrapperBg: 'bg-white/20 backdrop-blur-md', iconBorder: 'border-white/30', mainIcon: 'fa-solid fa-users-rays', 
+                titleText: 'text-white', subtitleText: 'text-slate-200', totalVotesText: 'text-white', totalVotesBg: 'bg-slate-900/40 border-slate-400/30'
+            });
+
+            html += `</div>`; 
+            html += `</div>`; 
+            return html;
+        }
+
+        // ==========================================
+        // OTHER PAGES (Status, Settings, Input, Login)
+        // ==========================================
+        
+        // --- NEW: STATUS PAGE RENDERER ---
+        function renderStatus() {
+            let html = `<div class="max-w-6xl mx-auto space-y-6 fade-in mt-4 sm:mt-8 px-4 sm:px-0">
+                <div class="bg-white rounded-3xl shadow-sm border border-slate-100 p-4 sm:p-5 md:p-8">
+                    <div class="flex items-center gap-3 sm:gap-4 mb-5 sm:mb-6 border-b border-slate-100 pb-4 sm:pb-5">
+                        <div class="bg-indigo-600 p-2.5 sm:p-3 md:p-4 rounded-xl sm:rounded-2xl text-white shadow-sm">
+                            <i class="fa-solid fa-tower-broadcast text-lg sm:text-xl md:text-2xl"></i>
+                        </div>
+                        <div>
+                            <h2 class="text-xl sm:text-2xl md:text-3xl font-bold text-slate-800">สถานะการส่งข้อมูล (เรียลไทม์)</h2>
+                            <p class="text-slate-500 font-medium mt-0.5 sm:mt-1 text-xs sm:text-sm md:text-base">ตรวจสอบความเคลื่อนไหวและสถิติแต่ละหน่วย</p>
+                        </div>
+                    </div>
+                    
+                    <div class="flex flex-wrap items-center gap-2 sm:gap-3 text-[10px] sm:text-xs font-bold bg-slate-50 px-3 py-2.5 rounded-xl border border-slate-200 mb-6">
+                        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-indigo-600"></span> ปิดหีบแล้ว</span>
+                        <span class="flex items-center gap-1 ml-2"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span> อัปเดตล่าสุด (<15น.)</span>
+                        <span class="flex items-center gap-1 ml-2"><span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span> อัปเดตนานแล้ว</span>
+                        <span class="flex items-center gap-1 ml-2"><span class="w-2.5 h-2.5 rounded-full bg-slate-300"></span> รอข้อมูล</span>
+                    </div>
+
+                    <div class="grid grid-cols-1 gap-6 sm:gap-8">
+            `;
+
+            [1, 2].forEach(zone => {
+                html += `
+                    <div class="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
+                        <div class="bg-slate-50 px-4 py-3 border-b border-slate-200">
+                            <h4 class="font-bold text-slate-800 text-base sm:text-lg">เขตเลือกตั้งที่ ${zone}</h4>
+                        </div>
+                        <div class="p-4 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
+                `;
+                
+                getStationsForZone(zone).forEach(s => {
+                    const key = `${zone}_${s}`;
+                    const lastUpd = state.stationLastUpdated[key];
+                    const isClosed = state.stationClosed[key];
+                    
+                    if (isClosed) {
+                        const stats = getStationMayorStats(s); 
+                        const turnoutPercent = stats.eligible > 0 ? ((stats.turnout / stats.eligible) * 100).toFixed(1) : "0.0";
+                        
+                        html += `
+                            <div class="bg-white border-2 border-indigo-400 rounded-xl p-3 shadow-md flex flex-col relative overflow-hidden transition-all hover:scale-105">
+                                <div class="absolute -right-3 -top-3 text-indigo-50 opacity-40 text-6xl pointer-events-none"><i class="fa-solid fa-box-archive"></i></div>
+                                <div class="flex justify-between items-center mb-2 border-b border-slate-100 pb-2 relative z-10">
+                                    <span class="font-black text-slate-800 text-sm">หน่วย ${s}</span>
+                                    <span class="bg-indigo-100 text-indigo-700 text-[9px] font-bold px-1.5 py-0.5 rounded border border-indigo-200 flex items-center gap-1"><i class="fa-solid fa-check"></i> ปิดหีบ</span>
+                                </div>
+                                <div class="space-y-1 text-[11px] sm:text-xs relative z-10">
+                                    <div class="flex justify-between"><span class="text-slate-500">ผู้มีสิทธิ์</span> <span class="font-bold text-slate-700">${stats.eligible.toLocaleString()}</span></div>
+                                    <div class="flex justify-between"><span class="text-slate-500">มาใช้สิทธิ์</span> <span class="font-bold text-indigo-600">${stats.turnout.toLocaleString()}</span></div>
+                                    <div class="flex justify-between"><span class="text-slate-500">คิดเป็น</span> <span class="font-bold text-indigo-600">${turnoutPercent}%</span></div>
+                                    <div class="w-full h-px bg-slate-100 my-1"></div>
+                                    <div class="flex justify-between"><span class="text-slate-500">บัตรดี</span> <span class="font-bold text-emerald-600">${stats.valid.toLocaleString()}</span></div>
+                                    <div class="flex justify-between"><span class="text-slate-500">บัตรเสีย</span> <span class="font-bold text-rose-600">${stats.invalid.toLocaleString()}</span></div>
+                                    <div class="flex justify-between"><span class="text-slate-500">ไม่ประสงค์</span> <span class="font-bold text-slate-600">${stats.novote.toLocaleString()}</span></div>
+                                </div>
+                            </div>
+                        `;
+                    } else {
+                        let statusClass = "bg-slate-50 text-slate-400 border-slate-200", text = "รอข้อมูล", badgeClass = "bg-slate-200 text-slate-500";
+                        if (lastUpd) {
+                            if ((Date.now() - lastUpd)/60000 <= 15) { statusClass = "bg-emerald-50 text-emerald-700 border-emerald-200 shadow-sm"; badgeClass = "bg-emerald-500 text-white shadow-sm"; } 
+                            else { statusClass = "bg-amber-50 text-amber-700 border-amber-200 shadow-sm"; badgeClass = "bg-amber-500 text-white shadow-sm"; }
+                            text = new Date(lastUpd).toLocaleTimeString('th-TH', {hour: '2-digit', minute:'2-digit'});
+                        }
+                        html += `
+                            <div class="flex flex-col items-center justify-center py-4 px-2 rounded-xl border ${statusClass} transition-all hover:scale-105 cursor-default h-full">
+                                <div class="w-10 h-10 rounded-full flex items-center justify-center font-black text-base ${badgeClass} mb-2">${s}</div>
+                                <span class="text-xs font-bold tracking-tighter">${text}</span>
+                            </div>
+                        `;
+                    }
+                });
+                html += `</div></div>`;
+            });
+            html += `</div></div></div>`;
+            return html;
+        }
+        
+        function renderLogin() {
+            let html = `<div class="max-w-md mx-auto fade-in mt-4 sm:mt-10 px-4 sm:px-0"><div class="bg-white rounded-3xl shadow-xl shadow-indigo-100/50 border border-slate-100 overflow-hidden"><div class="flex border-b border-slate-100">
+                <button onclick="setLoginMode('staff')" class="flex-1 py-3 sm:py-4 text-center font-bold text-xs sm:text-sm transition-colors ${state.loginMode === 'staff' ? 'bg-indigo-600 text-white' : 'bg-slate-50 text-slate-500 hover:bg-slate-100'}"><i class="fa-solid fa-user-pen mr-1 sm:mr-2"></i> เจ้าหน้าที่กรอกคะแนน</button>
+                <button onclick="setLoginMode('admin')" class="flex-1 py-3 sm:py-4 text-center font-bold text-xs sm:text-sm transition-colors ${state.loginMode === 'admin' ? 'bg-indigo-600 text-white' : 'bg-slate-50 text-slate-500 hover:bg-slate-100'}"><i class="fa-solid fa-user-shield mr-1 sm:mr-2"></i> ผู้ดูแลระบบ (Admin)</button></div><div class="p-6 sm:p-8">`;
+
+            if (state.loginMode === 'staff') {
+                html += `<div class="text-center mb-5 sm:mb-6"><div class="w-12 h-12 sm:w-16 sm:h-16 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-2 sm:mb-3"><i class="fa-solid fa-location-dot text-xl sm:text-2xl"></i></div><h2 class="text-xl sm:text-2xl font-bold text-slate-800">เข้าสู่ระบบประจำหน่วย</h2><p class="text-slate-500 text-xs sm:text-sm mt-1 sm:mt-2">ระบบจะนำท่านเข้าสู่หน่วยอัตโนมัติตามรหัสผ่าน</p></div><div class="space-y-3 sm:space-y-4"><div><label class="block text-xs sm:text-sm font-bold text-slate-700 mb-1">เขตเลือกตั้ง</label><select onchange="updateLoginZone(this.value)" class="w-full border-slate-300 rounded-xl shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2.5 sm:p-3 border bg-slate-50 font-medium text-base sm:text-lg"><option value="1" ${state.loginZone === 1 ? 'selected' : ''}>เขตที่ 1 (หน่วย 1-13)</option><option value="2" ${state.loginZone === 2 ? 'selected' : ''}>เขตที่ 2 (หน่วย 14-30)</option></select></div><div><label class="block text-xs sm:text-sm font-bold text-slate-700 mb-1">รหัสผ่านประจำหน่วย (PIN)</label><input type="password" id="login-pin" class="w-full border-slate-300 rounded-xl shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2.5 sm:p-3 border bg-slate-50 tracking-widest font-bold text-center text-xl sm:text-2xl" placeholder="••••" /></div><button onclick="loginAsStaff()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 sm:py-4 px-4 rounded-xl shadow-md transition-all mt-2 sm:mt-4 text-base sm:text-lg">เข้าสู่ระบบ</button></div>`;
+            } else {
+                html += `<div class="text-center mb-5 sm:mb-6"><div class="w-12 h-12 sm:w-16 sm:h-16 bg-slate-100 text-slate-600 rounded-full flex items-center justify-center mx-auto mb-2 sm:mb-3"><i class="fa-solid fa-lock text-xl sm:text-2xl"></i></div><h2 class="text-xl sm:text-2xl font-bold text-slate-800">สำหรับผู้ดูแลระบบ</h2></div><div class="space-y-3 sm:space-y-4"><div><label class="block text-xs sm:text-sm font-bold text-slate-700 mb-1">รหัสผ่าน Admin</label><input type="password" id="login-admin-pin" class="w-full border-slate-300 rounded-xl shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2.5 sm:p-3 border bg-slate-50 tracking-widest font-bold text-center text-lg sm:text-xl" placeholder="••••" /></div><button onclick="loginAsAdmin()" class="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-3 sm:py-3.5 px-4 rounded-xl shadow-md transition-all mt-2 sm:mt-4 text-sm sm:text-base">เข้าสู่ระบบผู้จัดการ</button></div>`;
+            }
+            return html + `</div></div></div>`;
+        }
+
+        function renderStaffInit() {
+            const { zone, station, name } = state.currentUser;
+            return `
+                <div class="max-w-md mx-auto fade-in mt-4 lg:mt-10 px-4 sm:px-0">
+                    <div class="bg-white rounded-3xl shadow-xl shadow-indigo-100/50 border border-slate-100 overflow-hidden">
+                        <div class="bg-gradient-to-br from-indigo-700 to-blue-800 p-6 sm:p-8 text-white text-center relative overflow-hidden">
+                            <div class="absolute -right-6 -top-6 sm:-right-10 sm:-top-10 text-white/10 text-[80px] sm:text-[120px]"><i class="fa-solid fa-box-open"></i></div>
+                            <div class="w-16 h-16 sm:w-20 sm:h-20 bg-white/20 backdrop-blur-md rounded-full flex items-center justify-center mx-auto mb-3 sm:mb-4 border border-white/30 shadow-inner relative z-10">
+                                <i class="fa-solid fa-clipboard-user text-3xl sm:text-4xl"></i>
+                            </div>
+                            <h2 class="text-xl sm:text-2xl font-bold mb-1 relative z-10">ข้อมูลเปิดหีบเลือกตั้ง</h2>
+                            <p class="text-indigo-100 text-xs sm:text-sm relative z-10">กรุณากรอกข้อมูลผู้มีสิทธิ์เลือกตั้งก่อนเริ่มบันทึกคะแนน</p>
+                        </div>
+                        <div class="p-5 sm:p-6 md:p-8 space-y-4 sm:space-y-6">
+                            <div class="bg-slate-50 p-3 sm:p-4 rounded-2xl border border-slate-100">
+                                <div class="flex items-center gap-2 sm:gap-3 mb-1.5 sm:mb-2">
+                                    <i class="fa-solid fa-map-location-dot text-indigo-500 text-sm sm:text-base"></i>
+                                    <span class="font-bold text-slate-700 text-xs sm:text-sm md:text-base">หน่วยเลือกตั้งที่ ${station} (เขต ${zone})</span>
+                                </div>
+                                <div class="flex items-center gap-2 sm:gap-3">
+                                    <i class="fa-solid fa-user-check text-indigo-500 text-sm sm:text-base"></i>
+                                    <span class="font-medium text-slate-600 text-xs sm:text-sm md:text-base">เจ้าหน้าที่: <span class="font-bold text-slate-800">${name}</span></span>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-xs sm:text-sm font-bold text-slate-700 mb-1.5 sm:mb-2">จำนวนผู้มีสิทธิ์เลือกตั้ง (คน)</label>
+                                <input type="number" id="init_eligible" min="0" class="w-full border-slate-300 rounded-xl shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-3 sm:p-4 border bg-slate-50 font-black text-center text-2xl sm:text-3xl text-indigo-700" placeholder="0" />
+                            </div>
+
+                            <button onclick="promptStaffInit()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 sm:py-4 px-4 rounded-xl shadow-md transition-all text-base sm:text-lg flex items-center justify-center gap-2">
+                                <i class="fa-solid fa-arrow-right-to-bracket"></i> ดำเนินการต่อ
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderStaffInput() {
+            const { zone, station, name } = state.currentUser;
+            const key = `${zone}_${station}`;
+            
+            if (!state.isVotingOpen || state.stationClosed[key]) {
+                const isClosed = state.stationClosed[key];
+                return `
+                <div class="max-w-2xl mx-auto fade-in mt-4 lg:mt-10 px-4 sm:px-0">
+                    <div class="bg-white rounded-3xl shadow-lg border border-slate-100 overflow-hidden">
+                        <div class="${isClosed ? 'bg-indigo-800' : 'bg-slate-800'} p-6 sm:p-8 text-white text-center relative overflow-hidden">
+                            <div class="absolute -right-6 -top-6 sm:-right-10 sm:-top-10 text-white/5 text-[80px] sm:text-[120px]"><i class="fa-solid fa-lock"></i></div>
+                            <h2 class="text-xl sm:text-2xl md:text-3xl font-bold mb-1 sm:mb-2 relative z-10 flex items-center justify-center gap-2"><i class="fa-solid fa-${isClosed ? 'check-circle' : 'user-check'}"></i> <span class="truncate">${name}</span></h2>
+                            <p class="${isClosed ? 'text-indigo-200' : 'text-slate-300'} text-sm sm:text-lg relative z-10">ประจำหน่วยเลือกตั้งที่ ${station} (เขต ${zone})</p>
+                        </div>
+                        <div class="p-6 sm:p-10 text-center py-10 sm:py-16">
+                            <div class="${isClosed ? 'text-indigo-500' : 'text-rose-500'} text-5xl sm:text-7xl mb-4 sm:mb-6 drop-shadow-sm"><i class="fa-solid fa-${isClosed ? 'box-archive' : 'lock'}"></i></div>
+                            <h3 class="text-xl sm:text-3xl font-black text-slate-800 mb-2 sm:mb-3">${isClosed ? 'หน่วยนี้ปิดหีบและนับคะแนนเสร็จสิ้นแล้ว' : 'ระบบปิดรับคะแนนชั่วคราว'}</h3>
+                            <p class="text-sm sm:text-lg text-slate-500">${isClosed ? 'ข้อมูลทั้งหมดถูกส่งไปยังศูนย์อำนวยการเรียบร้อยแล้ว<br>ขอบคุณสำหรับการปฏิบัติหน้าที่ครับ' : 'ขณะนี้ผู้ดูแลระบบได้ทำการปิดรับข้อมูล<br>หากต้องการส่งข้อมูล กรุณารอเปิดระบบอีกครั้ง'}</p>
+                        </div>
+                    </div>
+                </div>`;
+            }
+
+            const myMayor = state.mayorCandidates;
+            const myCouncil = state.councilCandidates[zone];
+
+            const submitCount = state.stationSubmitCount[key] || 0;
+            const lastSubmitTime = state.stationLastUpdated[key] 
+                ? new Date(state.stationLastUpdated[key]).toLocaleTimeString('th-TH', {hour: '2-digit', minute:'2-digit'}) 
+                : '-';
+            
+            const eligibleVoters = state.scores[`station_${station}_eligible`] || '';
+
+            let html = `
+                <div class="max-w-2xl mx-auto fade-in pb-24 sm:pb-0">
+                    <div id="staff-timer-display" class="mb-3 sm:mb-4 sticky top-[56px] lg:top-[72px] z-20 px-2 sm:px-0"></div>
+                    <div class="bg-white rounded-none sm:rounded-3xl shadow-lg border-y sm:border border-slate-100 overflow-hidden">
+                        <div class="bg-gradient-to-br from-indigo-700 to-blue-800 p-4 sm:p-6 md:p-8 text-white relative overflow-hidden">
+                            <div class="absolute -right-6 -top-6 sm:-right-10 sm:-top-10 text-white/10 text-[80px] sm:text-[120px]"><i class="fa-solid fa-clipboard-check"></i></div>
+                            <div class="relative z-10">
+                                <div class="inline-flex items-center gap-1.5 sm:gap-2 bg-white/20 backdrop-blur-sm px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl text-[10px] sm:text-xs font-bold mb-3 sm:mb-4 border border-white/30 flex-wrap">
+                                    <span class="flex items-center gap-1"><i class="fa-solid fa-user-check"></i> เจ้าหน้าที่กรอกคะแนน</span>
+                                    <span class="w-px h-3 sm:h-4 bg-white/30 hidden sm:block"></span>
+                                    <span class="flex items-center gap-1 text-yellow-300"><i class="fa-solid fa-rotate"></i> นับครั้งที่: ${submitCount}</span>
+                                    <span class="w-px h-3 sm:h-4 bg-white/30 hidden sm:block"></span>
+                                    <span class="flex items-center gap-1 text-emerald-200"><i class="fa-solid fa-clock"></i> ล่าสุด: ${lastSubmitTime} น.</span>
+                                </div>
+                                <h2 class="text-xl sm:text-2xl md:text-3xl font-bold mb-1 sm:mb-2 leading-tight truncate">${name}</h2>
+                                <p class="text-indigo-100 text-sm sm:text-lg md:text-xl font-medium flex items-center gap-1.5 sm:gap-2 mt-1 sm:mt-2"><i class="fa-solid fa-map-location-dot"></i> ประจำหน่วยเลือกตั้งที่ ${station} (เขต ${zone})</p>
+                            </div>
+                        </div>
+                        <div class="p-3 sm:p-4 md:p-6 bg-slate-50 border-b border-slate-200 flex items-center gap-2 sm:gap-3">
+                            <div class="bg-indigo-100 text-indigo-700 w-8 h-8 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl flex items-center justify-center flex-shrink-0"><i class="fa-solid fa-pen-nib text-sm sm:text-lg"></i></div>
+                            <p class="text-xs sm:text-sm md:text-base font-bold text-slate-700 leading-tight">กรอก <span class="text-indigo-600">"ยอดสะสมล่าสุด"</span> ในช่องด้านล่าง แล้วกดบันทึก</p>
+                        </div>
+                        
+                        <div class="p-3 sm:p-4 md:p-8 space-y-6 sm:space-y-8">
+                            
+                            <div class="mb-6 sm:mb-8">
+                                <h3 class="font-extrabold text-lg sm:text-xl md:text-2xl text-slate-700 mb-3 sm:mb-4 flex items-center gap-2 pb-2 border-b-2 border-slate-200"><i class="fa-solid fa-users"></i> ข้อมูลหน่วยเลือกตั้ง</h3>
+                                <div class="flex flex-col sm:flex-row items-start sm:items-center p-3 sm:p-4 bg-white rounded-2xl border-2 border-slate-100 focus-within:border-indigo-400 focus-within:ring-4 focus-within:ring-indigo-50 transition-all shadow-sm gap-2 sm:gap-0">
+                                    <div class="flex items-center gap-3 w-full sm:w-auto sm:flex-1">
+                                        <div class="w-10 h-10 sm:w-12 sm:h-12 bg-indigo-50 rounded-xl flex items-center justify-center text-indigo-500 flex-shrink-0"><i class="fa-solid fa-id-card text-xl sm:text-2xl"></i></div>
+                                        <div class="flex-1"><h4 class="font-bold text-slate-800 text-sm sm:text-base md:text-lg">จำนวนผู้มีสิทธิ์เลือกตั้ง (คน)</h4></div>
+                                    </div>
+                                    <div class="w-full sm:w-28 md:w-32 flex-shrink-0 relative mt-2 sm:mt-0">
+                                        <input type="number" min="0" id="input_eligible" value="${eligibleVoters}" class="w-full text-right bg-slate-50 border border-slate-200 rounded-xl p-2 sm:p-3 md:p-4 font-black text-xl sm:text-2xl text-indigo-600 focus:outline-none focus:bg-white" placeholder="0" />
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div>
+                                <h3 class="font-extrabold text-lg sm:text-xl md:text-2xl text-amber-600 mb-3 sm:mb-4 flex items-center gap-2 pb-2 border-b-2 border-amber-100"><i class="fa-solid fa-medal"></i> นายกเทศมนตรี</h3>
+                                <div class="space-y-2 sm:space-y-3">
+            `;
+            
+            myMayor.forEach(c => {
+                const val = state.scores[`station_${station}_candidate_${c.id}`] || '';
+                html += `<div class="flex items-center p-2 sm:p-3 md:p-4 bg-white rounded-2xl border-2 border-slate-100 focus-within:border-amber-400 focus-within:ring-4 focus-within:ring-amber-50 transition-all shadow-sm gap-2 sm:gap-3"><div class="w-10 h-10 sm:w-12 sm:h-12 md:w-14 md:h-14 bg-slate-100 rounded-xl flex items-center justify-center font-black text-lg sm:text-xl md:text-2xl text-slate-600 flex-shrink-0">${c.number}</div><div class="flex-1 min-w-0"><h4 class="font-bold text-slate-800 text-xs sm:text-sm md:text-lg leading-tight truncate">${c.name}</h4></div><div class="w-20 sm:w-24 md:w-32 flex-shrink-0 relative"><input type="number" min="0" id="input_m_${c.id}" value="${val}" class="w-full text-right bg-slate-50 border border-slate-200 rounded-xl p-2 sm:p-3 md:p-4 font-black text-xl sm:text-2xl md:text-3xl text-amber-600 focus:outline-none focus:bg-white" placeholder="0" /></div></div>`;
+            });
+            const mNoVote = state.scores[`station_${station}_mayor_novote`] || '';
+            const mInvalid = state.scores[`station_${station}_mayor_invalid`] || '';
+            html += `<div class="grid grid-cols-2 gap-2 sm:gap-3 mt-3 sm:mt-4"><div class="bg-slate-50 p-2 sm:p-3 rounded-xl border border-slate-200 flex flex-col justify-between"><label class="text-[10px] sm:text-xs font-bold text-slate-500 mb-1 flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-0"><i class="fa-solid fa-ban"></i> ไม่ประสงค์ลงคะแนน</label><input type="number" min="0" id="input_m_novote" value="${mNoVote}" class="w-full text-center bg-white border border-slate-300 rounded-lg p-1.5 sm:p-2 font-bold text-lg sm:text-xl text-slate-700 focus:outline-none focus:border-slate-500" placeholder="0"></div><div class="bg-red-50 p-2 sm:p-3 rounded-xl border border-red-100 flex flex-col justify-between"><label class="text-[10px] sm:text-xs font-bold text-red-500 mb-1 flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-0"><i class="fa-solid fa-triangle-exclamation"></i> บัตรเสีย</label><input type="number" min="0" id="input_m_invalid" value="${mInvalid}" class="w-full text-center bg-white border border-red-200 rounded-lg p-1.5 sm:p-2 font-bold text-lg sm:text-xl text-red-600 focus:outline-none focus:border-red-400" placeholder="0"></div></div></div></div><div><h3 class="font-extrabold text-lg sm:text-xl md:text-2xl text-blue-600 mb-3 sm:mb-4 flex items-center gap-2 pb-2 border-b-2 border-blue-100 mt-6 sm:mt-8"><i class="fa-solid fa-users"></i> สมาชิกสภาเทศบาล (ส.ท.)</h3><div class="space-y-2 sm:space-y-3">`;
+            myCouncil.forEach(c => {
+                const val = state.scores[`station_${station}_candidate_${c.id}`] || '';
+                html += `<div class="flex items-center p-2 sm:p-3 md:p-4 bg-white rounded-2xl border-2 border-slate-100 focus-within:border-blue-400 focus-within:ring-4 focus-within:ring-blue-50 transition-all shadow-sm gap-2 sm:gap-3"><div class="w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 bg-slate-100 rounded-lg flex items-center justify-center font-black text-base sm:text-lg md:text-xl text-slate-600 flex-shrink-0">${c.number}</div><div class="flex-1 min-w-0"><h4 class="font-bold text-slate-700 text-xs sm:text-sm md:text-base leading-tight">${c.name}</h4></div><div class="w-16 sm:w-20 md:w-28 flex-shrink-0 relative"><input type="number" min="0" id="input_c_${c.id}" value="${val}" class="w-full text-right bg-slate-50 border border-slate-200 rounded-xl p-1.5 sm:p-2 md:p-3 font-bold text-lg sm:text-xl md:text-2xl text-blue-600 focus:outline-none focus:bg-white" placeholder="0" /></div></div>`;
+            });
+            const cNoVote = state.scores[`station_${station}_council_novote`] || '';
+            const cInvalid = state.scores[`station_${station}_council_invalid`] || '';
+            html += `<div class="grid grid-cols-2 gap-2 sm:gap-3 mt-3 sm:mt-4"><div class="bg-slate-50 p-2 sm:p-3 rounded-xl border border-slate-200 flex flex-col justify-between"><label class="text-[10px] sm:text-xs font-bold text-slate-500 mb-1 flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-0"><i class="fa-solid fa-ban"></i> ไม่ประสงค์ลงคะแนน</label><input type="number" min="0" id="input_c_novote" value="${cNoVote}" class="w-full text-center bg-white border border-slate-300 rounded-lg p-1.5 sm:p-2 font-bold text-lg sm:text-xl text-slate-700 focus:outline-none focus:border-slate-500" placeholder="0"></div><div class="bg-red-50 p-2 sm:p-3 rounded-xl border border-red-100 flex flex-col justify-between"><label class="text-[10px] sm:text-xs font-bold text-red-500 mb-1 flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-0"><i class="fa-solid fa-triangle-exclamation"></i> บัตรเสีย</label><input type="number" min="0" id="input_c_invalid" value="${cInvalid}" class="w-full text-center bg-white border border-red-200 rounded-lg p-1.5 sm:p-2 font-bold text-lg sm:text-xl text-red-600 focus:outline-none focus:border-red-400" placeholder="0"></div></div></div></div>
+            <div class="fixed sm:sticky bottom-0 sm:bottom-4 pb-safe sm:pb-0 pt-3 sm:pt-4 z-30 flex flex-col-reverse sm:flex-row gap-2 sm:gap-3 bg-white sm:bg-transparent -mx-4 px-4 sm:mx-0 sm:px-0 left-0 w-full sm:w-auto shadow-[0_-5px_15px_-10px_rgba(0,0,0,0.1)] sm:shadow-none border-t border-slate-200 sm:border-none">
+                <button id="btn-save-staff" onclick="saveStaffScores(false)" class="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 font-black py-3 sm:py-4 md:py-5 px-2 sm:px-4 rounded-xl sm:rounded-2xl shadow-sm flex items-center justify-center gap-1.5 sm:gap-2 transition-transform active:scale-95 text-sm sm:text-lg border-b-4 border-slate-400"><i class="fa-solid fa-save"></i> บันทึกชั่วคราว</button>
+                <button id="btn-close-station" onclick="saveStaffScores(true)" class="flex-[2] bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-black py-3 sm:py-4 md:py-5 px-2 sm:px-4 rounded-xl sm:rounded-2xl shadow-[0_10px_20px_-10px_rgba(16,185,129,0.5)] flex items-center justify-center gap-1.5 sm:gap-2 transition-transform active:scale-95 text-base sm:text-lg md:text-xl border-b-4 border-teal-800"><i class="fa-solid fa-box-archive"></i> ปิดหีบและส่งผลคะแนน</button>
+            </div>
+            </div></div></div>`;
+            return html;
+        }
+
+        function renderSettings() {
+            let html = `<div class="max-w-5xl mx-auto space-y-6 fade-in mt-4 sm:mt-8 px-4 sm:px-0"><div class="bg-white rounded-3xl shadow-sm border border-slate-100 p-4 sm:p-5 md:p-8"><div class="flex items-center gap-3 sm:gap-4 mb-5 sm:mb-6 md:mb-8 border-b border-slate-100 pb-4 sm:pb-5 md:pb-6"><div class="bg-slate-800 p-2.5 sm:p-3 md:p-4 rounded-xl sm:rounded-2xl text-white shadow-sm"><i class="fa-solid fa-users-gear text-lg sm:text-xl md:text-2xl"></i></div><div><h2 class="text-xl sm:text-2xl md:text-3xl font-bold text-slate-800">ตั้งค่าระบบ (Admin)</h2><p class="text-slate-500 font-medium mt-0.5 sm:mt-1 text-xs sm:text-sm md:text-base">จัดการรายชื่อ ข้อมูลบัญชี และการควบคุม</p></div></div><div class="space-y-6 sm:space-y-10">`;
+            
+            html += `
+                <section class="bg-rose-50 p-4 sm:p-5 md:p-6 rounded-2xl sm:rounded-3xl border border-rose-200 shadow-sm">
+                    <h3 class="text-lg sm:text-xl md:text-2xl font-bold text-rose-700 mb-3 sm:mb-4 flex items-center gap-2 sm:gap-3">
+                        <i class="fa-solid fa-power-off"></i> ควบคุมระบบ
+                    </h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4">
+                        <div class="bg-white p-3 sm:p-4 rounded-xl border border-rose-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-0">
+                            <div>
+                                <h4 class="font-bold text-slate-800 text-sm sm:text-base">สถานะระบบรับคะแนน</h4>
+                                <p class="text-[10px] sm:text-[11px] text-slate-500 mt-0.5 sm:mt-1">เปิด/ปิด ไม่ให้เจ้าหน้าที่ส่งข้อมูล</p>
+                            </div>
+                            <button onclick="toggleVotingStatus()" class="px-3 sm:px-4 py-2 rounded-lg font-bold text-xs sm:text-sm shadow-sm transition-all ${state.isVotingOpen ? 'bg-emerald-500 hover:bg-emerald-600 text-white' : 'bg-slate-200 hover:bg-slate-300 text-slate-600'}">
+                                ${state.isVotingOpen ? '<i class="fa-solid fa-lock-open mr-1"></i> ระบบเปิดอยู่' : '<i class="fa-solid fa-lock mr-1"></i> ระบบปิดอยู่'}
+                            </button>
+                        </div>
+                        <div class="bg-white p-3 sm:p-4 rounded-xl border border-rose-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-0">
+                            <div>
+                                <h4 class="font-bold text-slate-800 text-sm sm:text-base">ล้างข้อมูลคะแนนทั้งหมด</h4>
+                                <p class="text-[10px] sm:text-[11px] text-slate-500 mt-0.5 sm:mt-1">รีเซ็ตคะแนนและสถานะปิดหีบ</p>
+                            </div>
+                            <button onclick="clearVotingData()" class="px-3 sm:px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg font-bold text-xs sm:text-sm shadow-sm transition-all">
+                                <i class="fa-solid fa-trash-can mr-1"></i> ล้างคะแนน
+                            </button>
+                        </div>
+                    </div>
+                </section>
+            `;
+
+            html += `<section class="bg-green-50/50 p-4 sm:p-5 md:p-6 rounded-2xl sm:rounded-3xl border border-green-200"><h3 class="text-lg sm:text-xl md:text-2xl font-bold text-green-700 mb-2 sm:mb-4 flex items-center gap-2 sm:gap-3"><i class="fa-solid fa-database"></i> ฐานข้อมูล Google Sheet</h3><p class="text-xs sm:text-sm text-green-700 mb-3 sm:mb-4">ระบบจะทำการ <b>"บันทึกข้อมูลอัตโนมัติ"</b> ลง Google Sheet ทุกครั้งที่มีการแก้ไขคะแนนหรือตั้งค่า</p><div class="space-y-3 sm:space-y-4"><div><label class="text-xs sm:text-sm font-bold text-slate-700 mb-1 block">Google Web App URL</label><input type="text" value="${state.googleSheetUrl || ''}" oninput="updateGoogleSheetUrl(this.value)" class="w-full p-2.5 sm:p-3 border border-slate-300 rounded-lg sm:rounded-xl font-medium focus:ring-2 focus:ring-green-500 focus:outline-none text-sm" placeholder="https://script.google.com/macros/s/.../exec" /></div><button id="btn-sync-sheet" onclick="syncToGoogleSheet()" class="w-full sm:w-auto bg-green-600 hover:bg-green-700 text-white font-bold py-2.5 sm:py-3 px-4 sm:px-6 rounded-lg sm:rounded-xl shadow-md transition-all flex items-center justify-center gap-2 text-sm sm:text-base"><i class="fa-solid fa-cloud-arrow-up"></i> บังคับบันทึกข้อมูลไปชีตทันที</button></div></section>`;
+            html += `<section class="bg-slate-50 p-4 sm:p-5 md:p-6 rounded-2xl sm:rounded-3xl border border-slate-200"><h3 class="text-lg sm:text-xl md:text-2xl font-bold text-slate-800 mb-4 sm:mb-6 flex items-center gap-2 sm:gap-3"><i class="fa-solid fa-user-lock"></i> บัญชีเจ้าหน้าที่ประจำหน่วย</h3><div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">`;
+            [1, 2].forEach(zone => {
+                getStationsForZone(zone).forEach(s => {
+                    const key = `${zone}_${s}`;
+                    const acc = state.staffAccounts[key] || { name: '', pin: '' };
+                    html += `<div class="bg-white rounded-xl shadow-sm border border-slate-200 p-3 sm:p-4 relative"><div class="absolute top-0 right-0 bg-slate-800 text-white text-[8px] sm:text-[10px] font-bold px-1.5 sm:px-2 py-0.5 sm:py-1 rounded-bl-lg rounded-tr-xl">หน่วย ${s} (เขต ${zone})</div><div class="mt-2 sm:mt-3 space-y-1.5 sm:space-y-2"><div><label class="text-[10px] sm:text-xs font-bold text-slate-500 mb-0.5 sm:mb-1 block">ชื่อผู้ดูแล</label><input type="text" value="${acc.name}" oninput="updateStaffSetting('${key}', 'name', this.value)" class="w-full p-1.5 sm:p-2 border border-slate-300 rounded-md sm:rounded-lg text-xs sm:text-sm font-medium focus:ring-2 focus:ring-slate-500 focus:outline-none" /></div><div><label class="text-[10px] sm:text-xs font-bold text-slate-500 mb-0.5 sm:mb-1 block">รหัสผ่าน</label><input type="text" value="${acc.pin}" oninput="updateStaffSetting('${key}', 'pin', this.value)" class="w-full p-1.5 sm:p-2 border border-slate-300 rounded-md sm:rounded-lg text-xs sm:text-sm font-bold tracking-widest text-slate-700 focus:ring-2 focus:ring-slate-500 focus:outline-none" /></div></div></div>`;
+                });
+            });
+            html += `</div></section><section class="bg-amber-50/50 p-4 sm:p-5 md:p-6 rounded-2xl sm:rounded-3xl border border-amber-100/50"><h3 class="text-lg sm:text-xl md:text-2xl font-bold text-amber-700 mb-4 sm:mb-6 flex items-center gap-2 sm:gap-3"><i class="fa-solid fa-medal"></i> นายกเทศมนตรี</h3><div class="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-5">`;
+            state.mayorCandidates.forEach(c => { html += `<div class="flex flex-col gap-0 bg-white rounded-xl shadow-sm border border-amber-200 overflow-hidden focus-within:ring-2 focus-within:ring-amber-400 focus-within:border-amber-400 transition-all"><label class="text-[10px] sm:text-xs md:text-sm font-bold text-amber-800 bg-amber-100 px-3 sm:px-4 py-1.5 sm:py-2 border-b border-amber-200 flex justify-between items-center"><span>เบอร์ ${c.number}</span><i class="fa-solid fa-pen text-amber-600/50 text-[8px] sm:text-[10px]"></i></label><input type="text" value="${c.name}" oninput="updateCandidateName('mayor', '${c.id}', this.value)" class="p-2 sm:p-3 md:p-4 border-none focus:outline-none font-semibold text-slate-700 text-sm sm:text-base md:text-lg" /></div>`; });
+            html += `</div></section><section class="bg-blue-50/50 p-4 sm:p-5 md:p-6 rounded-2xl sm:rounded-3xl border border-blue-100/50"><h3 class="text-lg sm:text-xl md:text-2xl font-bold text-blue-700 mb-4 sm:mb-6 flex items-center gap-2 sm:gap-3"><i class="fa-solid fa-users"></i> ส.ท. เขต 1</h3><div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4 md:gap-5">`;
+            state.councilCandidates[1].forEach(c => { html += `<div class="flex flex-col gap-0 bg-white rounded-xl shadow-sm border border-blue-200 overflow-hidden focus-within:ring-2 focus-within:ring-blue-400 focus-within:border-blue-400 transition-all"><label class="text-[8px] sm:text-[10px] md:text-xs font-bold text-blue-800 bg-blue-100 px-2 sm:px-3 py-1 sm:py-2 border-b border-blue-200 flex justify-between items-center"><span>เบอร์ ${c.number}</span><i class="fa-solid fa-pen text-blue-600/50 text-[8px] sm:text-[10px]"></i></label><input type="text" value="${c.name}" oninput="updateCandidateName('council', '${c.id}', this.value, 1)" class="p-2 sm:p-2.5 md:p-3 border-none focus:outline-none font-medium text-slate-700 text-xs sm:text-sm md:text-base" /></div>`; });
+            html += `</div></section><section class="bg-emerald-50/50 p-4 sm:p-5 md:p-6 rounded-2xl sm:rounded-3xl border border-emerald-100/50"><h3 class="text-lg sm:text-xl md:text-2xl font-bold text-emerald-700 mb-4 sm:mb-6 flex items-center gap-2 sm:gap-3"><i class="fa-solid fa-users"></i> ส.ท. เขต 2</h3><div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4 md:gap-5">`;
+            state.councilCandidates[2].forEach(c => { html += `<div class="flex flex-col gap-0 bg-white rounded-xl shadow-sm border border-emerald-200 overflow-hidden focus-within:ring-2 focus-within:ring-emerald-400 focus-within:border-emerald-400 transition-all"><label class="text-[8px] sm:text-[10px] md:text-xs font-bold text-emerald-800 bg-emerald-100 px-2 sm:px-3 py-1 sm:py-2 border-b border-emerald-200 flex justify-between items-center"><span>เบอร์ ${c.number}</span><i class="fa-solid fa-pen text-emerald-600/50 text-[8px] sm:text-[10px]"></i></label><input type="text" value="${c.name}" oninput="updateCandidateName('council', '${c.id}', this.value, 2)" class="p-2 sm:p-2.5 md:p-3 border-none focus:outline-none font-medium text-slate-700 text-xs sm:text-sm md:text-base" /></div>`; });
+            return html + `</div></section></div></div></div>`;
+        }
+
+        function renderApp() {
+            renderNav();
+            const mainContent = document.getElementById('main-content');
+            if (state.activeTab === 'dashboard') mainContent.innerHTML = renderDashboard();
+            else if (state.activeTab === 'login') mainContent.innerHTML = renderLogin();
+            else if (state.activeTab === 'staffInit' && state.currentUser?.role === 'staff') mainContent.innerHTML = renderStaffInit();
+            else if (state.activeTab === 'input' && state.currentUser?.role === 'staff') { mainContent.innerHTML = renderStaffInput(); updateTimerUI(); }
+            else if (state.activeTab === 'status' && state.currentUser?.role === 'admin') mainContent.innerHTML = renderStatus();
+            else if (state.activeTab === 'settings' && state.currentUser?.role === 'admin') mainContent.innerHTML = renderSettings();
+            else { state.activeTab = 'dashboard'; mainContent.innerHTML = renderDashboard(); }
+        }
+
+        window.onload = async () => {
+            loadLocalData();
+            await fetchFromGoogleSheet();
+            if (Object.keys(state.staffAccounts).length === 0) {
+                initDefaultStaff();
+            }
+            if (state.currentUser && state.activeTab === 'login') {
+                if (state.currentUser.role === 'admin') state.activeTab = 'status';
+                else {
+                    const sKey = `station_${state.currentUser.station}_eligible`;
+                    state.activeTab = (state.scores[sKey] === undefined) ? 'staffInit' : 'input';
+                }
+            }
+            if (!state.currentUser && (state.activeTab === 'input' || state.activeTab === 'status' || state.activeTab === 'settings' || state.activeTab === 'staffInit')) state.activeTab = 'login';
+            renderApp();
+            if (state.activeTab === 'input' && state.currentUser?.role === 'staff') startTimer();
+            if ((state.activeTab === 'dashboard' || state.activeTab === 'status') && (!dashboardInterval)) startDashboardTimer();
+        };
+
+    </script>
+</body>
+</html>
