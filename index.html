@@ -69,7 +69,8 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        // IMPORT updateDoc เพิ่มเข้ามาเพื่อแก้ไขปัญหาการเซฟทับกัน
+        import { getFirestore, doc, setDoc, updateDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- STATE MANAGEMENT ---
         let state = {
@@ -128,7 +129,7 @@
             container.appendChild(toast);
             
             const audio = document.getElementById('ping-sound');
-            if (audio && !isAlert) { // Play sound mostly for positive updates
+            if (audio && !isAlert) {
                 audio.currentTime = 0;
                 audio.play().catch(e => console.log('Audio autoplay blocked', e));
             }
@@ -197,7 +198,7 @@
         // --- LOAD DATA & FIREBASE ---
         function loadLocalData() {
             try {
-                const saved = localStorage.getItem('electionNongBuaSalaDataV8');
+                const saved = localStorage.getItem('electionNongBuaSalaDataV9');
                 if (saved) {
                     const parsed = JSON.parse(saved);
                     state.mayorCandidates = parsed.mayorCandidates || state.mayorCandidates;
@@ -237,7 +238,7 @@
             if (!isInitialLoad && (state.activeTab === 'dashboard' || state.activeTab === 'status' || state.activeTab === 'settings')) {
                 newlyClosed.forEach(key => {
                     const [z, s] = key.split('_');
-                    window.showToast('ปิดหีบเรียบร้อย!', `หน่วยเลือกตั้งที่ ${s} (เขต ${z}) นับเสร็จสิ้น`, false); // Notice style
+                    window.showToast('ปิดหีบเรียบร้อย!', `หน่วยเลือกตั้งที่ ${s} (เขต ${z}) นับเสร็จสิ้น`, false); 
                 });
 
                 newlyUpdated.forEach(key => {
@@ -328,11 +329,12 @@
             }, 1500); 
         }
 
+        // --- SAVE DATA (Admin / Global) ---
         function saveData() {
             if (isFirebaseReady) {
                 setDoc(mainDocRef, { ...state }, { merge: true }).catch(e => console.error(e));
             }
-            localStorage.setItem('electionNongBuaSalaDataV8', JSON.stringify(state));
+            localStorage.setItem('electionNongBuaSalaDataV9', JSON.stringify(state));
             triggerAutoSync();
         }
 
@@ -559,62 +561,80 @@
             }
         };
 
+        // --- ATOMIC SAVE DATA (For Staff Concurrency) ---
         window.executeSaveStaffScores = async (isFinal) => {
             if (!state.isVotingOpen) return; 
 
             const { zone, station } = state.currentUser;
-            const key = `${zone}_${station}`;
+            const stationKey = `${zone}_${station}`;
             
             const btnSave = document.getElementById('btn-save-staff');
             const btnClose = document.getElementById('btn-close-station');
             if(btnSave) { btnSave.disabled = true; btnSave.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> บันทึก...'; }
             if(btnClose) { btnClose.disabled = true; }
 
-            if (state.googleSheetUrl) {
-                try {
-                    const response = await fetch(state.googleSheetUrl + '?action=load');
-                    const result = await response.json();
-                    if (result.status === 'success' && result.data) {
-                        const parsed = typeof result.data === 'string' ? JSON.parse(result.data) : result.data;
-                        state.scores = { ...state.scores, ...(parsed.scores || {}) };
-                        state.stationLastUpdated = { ...state.stationLastUpdated, ...(parsed.stationLastUpdated || {}) };
-                        state.stationSubmitCount = { ...state.stationSubmitCount, ...(parsed.stationSubmitCount || {}) };
-                        state.stationClosed = { ...state.stationClosed, ...(parsed.stationClosed || {}) };
-                        state.staffAccounts = { ...state.staffAccounts, ...(parsed.staffAccounts || {}) };
-                        state.mayorCandidates = parsed.mayorCandidates || state.mayorCandidates;
-                        state.councilCandidates = parsed.councilCandidates || state.councilCandidates;
-                    }
-                } catch(e) { console.error("Sync merge error", e); }
-            }
+            // 1. Prepare data updates specifically for this station
+            let updates = {};
+            const eligible = parseInt(document.getElementById('input_eligible')?.value || 0);
+            updates[`scores.station_${station}_eligible`] = eligible;
+            state.scores[`station_${station}_eligible`] = eligible;
 
-            let updatedScores = { ...state.scores };
-            
-            updatedScores[`station_${station}_eligible`] = parseInt(document.getElementById('input_eligible')?.value || 0);
+            state.mayorCandidates.forEach(c => { 
+                let v = parseInt(document.getElementById(`input_m_${c.id}`)?.value || 0);
+                updates[`scores.station_${station}_candidate_${c.id}`] = v; 
+                state.scores[`station_${station}_candidate_${c.id}`] = v;
+            });
+            state.councilCandidates[zone].forEach(c => { 
+                let v = parseInt(document.getElementById(`input_c_${c.id}`)?.value || 0);
+                updates[`scores.station_${station}_candidate_${c.id}`] = v; 
+                state.scores[`station_${station}_candidate_${c.id}`] = v;
+            });
 
-            state.mayorCandidates.forEach(c => { const el = document.getElementById(`input_m_${c.id}`); if(el) updatedScores[`station_${station}_candidate_${c.id}`] = parseInt(el.value || 0); });
-            state.councilCandidates[zone].forEach(c => { const el = document.getElementById(`input_c_${c.id}`); if(el) updatedScores[`station_${station}_candidate_${c.id}`] = parseInt(el.value || 0); });
-            updatedScores[`station_${station}_mayor_novote`] = parseInt(document.getElementById('input_m_novote')?.value || 0);
-            updatedScores[`station_${station}_mayor_invalid`] = parseInt(document.getElementById('input_m_invalid')?.value || 0);
-            updatedScores[`station_${station}_council_novote`] = parseInt(document.getElementById('input_c_novote')?.value || 0);
-            updatedScores[`station_${station}_council_invalid`] = parseInt(document.getElementById('input_c_invalid')?.value || 0);
+            ['mayor_novote', 'mayor_invalid', 'council_novote', 'council_invalid'].forEach(f => {
+                let v = parseInt(document.getElementById(`input_${f.charAt(0)}_${f.split('_')[1]}`)?.value || 0);
+                updates[`scores.station_${station}_${f}`] = v;
+                state.scores[`station_${station}_${f}`] = v;
+            });
             
-            state.scores = updatedScores;
-            state.stationLastUpdated[key] = Date.now();
-            previousUpdateTimes[key] = state.stationLastUpdated[key]; 
-            state.stationSubmitCount[key] = (state.stationSubmitCount[key] || 0) + 1;
+            const nowMs = Date.now();
+            const nowTime = new Date().toLocaleTimeString('th-TH', {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+            const lastUpdatedStr = new Date().toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric' }) + ' ' + nowTime;
+
+            updates[`stationLastUpdated.${stationKey}`] = nowMs;
+            state.stationLastUpdated[stationKey] = nowMs;
+            previousUpdateTimes[stationKey] = nowMs;
+            
+            const newCount = (state.stationSubmitCount[stationKey] || 0) + 1;
+            updates[`stationSubmitCount.${stationKey}`] = newCount;
+            state.stationSubmitCount[stationKey] = newCount;
             
             if (isFinal) {
-                state.stationClosed[key] = true;
-                previousClosedStatus[key] = true;
+                updates[`stationClosed.${stationKey}`] = true;
+                state.stationClosed[stationKey] = true;
+                previousClosedStatus[stationKey] = true;
             }
 
-            const nowTime = new Date().toLocaleTimeString('th-TH', {hour: '2-digit', minute:'2-digit', second:'2-digit'});
-            state.lastUpdated = new Date().toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric' }) + ' ' + nowTime;
+            updates['lastUpdated'] = lastUpdatedStr;
+            state.lastUpdated = lastUpdatedStr;
+
+            // 2. Perform Atomic Update to Firebase (Prevents Concurrency Overwrites)
+            if (isFirebaseReady) {
+                try {
+                    await updateDoc(mainDocRef, updates);
+                } catch (e) {
+                    // Fallback to merge if doc structure doesn't exist yet
+                    await setDoc(mainDocRef, { ...state }, { merge: true });
+                }
+            }
             
-            saveData(); 
+            // 3. Save to Local & Trigger Google Sheets Auto-Sync
+            localStorage.setItem('electionNongBuaSalaDataV9', JSON.stringify(state));
+            triggerAutoSync(); // Calls Sheet API
             
-            window.showStaffAlert(state.stationSubmitCount[key], nowTime, isFinal);
-            renderApp(); updateTimerUI();
+            // 4. Update UI
+            window.showStaffAlert(newCount, nowTime, isFinal);
+            renderApp(); 
+            updateTimerUI();
         };
 
         // --- ADMIN CONTROLS ---
@@ -688,6 +708,9 @@
             document.getElementById('mobile-nav').innerHTML = mobileNavHtml;
         }
 
+        // ==========================================
+        // 16:9 FULLSCREEN DASHBOARD RENDERER
+        // ==========================================
         function renderDashboard() {
             const mayorCandidatesSorted = [...state.mayorCandidates].map(c => ({ ...c, score: getTotalScore(c.id) })).sort((a, b) => a.number - b.number);
             const m1 = mayorCandidatesSorted[0], m2 = mayorCandidatesSorted[1];
@@ -1034,7 +1057,7 @@
             html += `</div></div></div>`;
             return html;
         }
-        
+
         function renderLogin() {
             let html = `<div class="max-w-md mx-auto fade-in mt-4 sm:mt-10 px-4 sm:px-0"><div class="bg-white rounded-3xl shadow-xl shadow-indigo-100/50 border border-slate-100 overflow-hidden"><div class="flex border-b border-slate-100">
                 <button onclick="setLoginMode('staff')" class="flex-1 py-3 sm:py-4 text-center font-bold text-xs sm:text-sm transition-colors ${state.loginMode === 'staff' ? 'bg-indigo-600 text-white' : 'bg-slate-50 text-slate-500 hover:bg-slate-100'}"><i class="fa-solid fa-user-pen mr-1 sm:mr-2"></i> เจ้าหน้าที่กรอกคะแนน</button>
