@@ -1024,6 +1024,7 @@
                     const key = `${zone}_${s}`;
                     const lastUpd = state.stationLastUpdated[key];
                     const isClosed = state.stationClosed[key];
+                    const submitCount = state.stationSubmitCount[key] || 0;
                     
                     if (isClosed) {
                         const stats = getStationMayorStats(s); 
@@ -1037,6 +1038,7 @@
                                     <span class="bg-indigo-100 text-indigo-700 text-[9px] font-bold px-1.5 py-0.5 rounded border border-indigo-200 flex items-center gap-1"><i class="fa-solid fa-check"></i> ปิดหีบ</span>
                                 </div>
                                 <div class="space-y-1 text-[11px] sm:text-xs relative z-10">
+                                    <div class="flex justify-between"><span class="text-slate-500">นับครั้งที่</span> <span class="font-bold text-slate-700">${submitCount}</span></div>
                                     <div class="flex justify-between"><span class="text-slate-500">ผู้มีสิทธิ์</span> <span class="font-bold text-slate-700">${stats.eligible.toLocaleString()}</span></div>
                                     <div class="flex justify-between"><span class="text-slate-500">มาใช้สิทธิ์</span> <span class="font-bold text-indigo-600">${stats.turnout.toLocaleString()}</span></div>
                                     <div class="flex justify-between"><span class="text-slate-500">คิดเป็น</span> <span class="font-bold text-indigo-600">${turnoutPercent}%</span></div>
@@ -1054,10 +1056,14 @@
                             else { statusClass = "bg-amber-50 text-amber-700 border-amber-200 shadow-sm"; badgeClass = "bg-amber-500 text-white shadow-sm"; }
                             text = new Date(lastUpd).toLocaleTimeString('th-TH', {hour: '2-digit', minute:'2-digit'});
                         }
+                        
+                        let countHtml = submitCount > 0 ? `<div class="mt-1 text-[9px] sm:text-[10px] bg-white/60 px-2 py-0.5 rounded-full font-bold text-slate-600 shadow-sm">ส่ง ${submitCount} ครั้ง</div>` : '';
+                        
                         html += `
-                            <div class="flex flex-col items-center justify-center py-4 px-2 rounded-xl border ${statusClass} transition-all hover:scale-105 cursor-default h-full">
-                                <div class="w-10 h-10 rounded-full flex items-center justify-center font-black text-base ${badgeClass} mb-2">${s}</div>
-                                <span class="text-xs font-bold tracking-tighter">${text}</span>
+                            <div class="flex flex-col items-center justify-center py-3 sm:py-4 px-1 sm:px-2 rounded-xl border ${statusClass} transition-all hover:scale-105 cursor-default h-full relative">
+                                <div class="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center font-black text-sm sm:text-base ${badgeClass} mb-1.5 sm:mb-2">${s}</div>
+                                <span class="text-[10px] sm:text-xs font-bold tracking-tighter">${text}</span>
+                                ${countHtml}
                             </div>
                         `;
                     }
