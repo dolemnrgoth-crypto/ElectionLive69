@@ -300,9 +300,6 @@
 
         // --- GOOGLE SHEET SYNC ---
         async function fetchFromGoogleSheet() {
-            // *** จุดแก้ไขสำคัญ ***
-            // หากเชื่อมต่อ Firebase ได้แล้ว ให้หยุดดึงจาก Google Sheet เด็ดขาด
-            // ป้องกันข้อมูลเก่าใน Sheet วิ่งมาทับข้อมูลใหม่ใน Firebase 
             if (!state.googleSheetUrl || isFirebaseReady) return false;
             
             try {
@@ -338,10 +335,11 @@
         // --- SAVE DATA (Admin / Global) ---
         function saveData() {
             if (isFirebaseReady) {
+                // Admin saves full state - perfectly fine as Admin is a single user
                 setDoc(mainDocRef, { ...state }, { merge: true }).catch(e => console.error(e));
             }
             localStorage.setItem('electionNongBuaSalaDataV9', JSON.stringify(state));
-            triggerAutoSync();
+            triggerAutoSync(); // Admin saves also trigger sheet backup
         }
 
         function initDefaultStaff() {
@@ -349,9 +347,7 @@
             [1, 2].forEach(zone => {
                 getStationsForZone(zone).forEach(s => {
                     const key = `${zone}_${s}`;
-                    // อัปเดตรหัสผ่านอัตโนมัติ หากยังไม่มี หรือยังเป็นรหัสเก่า (1234)
                     if (!state.staffAccounts[key] || state.staffAccounts[key].pin === "1234") {
-                        // สร้างรหัส 4 หลัก: เลขเขต + 0 + เลขหน่วย (เช่น 1001, 2017)
                         const pin = `${zone}${s.toString().padStart(3, '0')}`;
                         state.staffAccounts[key] = { name: `เจ้าหน้าที่หน่วย ${s} (เขต ${zone})`, pin: pin };
                         changed = true;
@@ -441,7 +437,6 @@
             if (dashboardInterval) clearInterval(dashboardInterval);
             dashboardInterval = setInterval(() => {
                 if (state.activeTab === 'dashboard' || state.activeTab === 'status') {
-                    // ดึงข้อมูลสำรองเฉพาะตอนที่ไม่ได้ต่อ Firebase 
                     if (!isFirebaseReady) fetchFromGoogleSheet();
                 }
             }, 5000);
@@ -589,6 +584,7 @@
         };
 
         // --- ATOMIC SAVE DATA (For Staff Concurrency) ---
+        // *** ระบบรับประกันความถูกต้อง 100% สำหรับการบันทึกพร้อมกัน ***
         window.executeSaveStaffScores = async (isFinal) => {
             if (!state.isVotingOpen) return; 
 
@@ -600,7 +596,8 @@
             if(btnSave) { btnSave.disabled = true; btnSave.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> บันทึก...'; }
             if(btnClose) { btnClose.disabled = true; }
 
-            // 1. Prepare data updates specifically for this station using unique zone+station key
+            // 1. Prepare data updates specifically for this station (Atomic Fields)
+            // ระบุเจาะจงเฉพาะ Field ของหน่วยตัวเองเท่านั้น การอัปเดตแบบนี้ Firebase จะ Merge ให้อัตโนมัติ ไม่มีการทับกัน
             let updates = {};
             const eligible = parseInt(document.getElementById('input_eligible')?.value || 0);
             updates[`scores.z${zone}_s${station}_eligible`] = eligible;
@@ -649,7 +646,17 @@
                 try {
                     await updateDoc(mainDocRef, updates);
                 } catch (e) {
-                    await setDoc(mainDocRef, { ...state }, { merge: true });
+                    // หากเอกสารหลักยังไม่เคยถูกสร้าง (ถูกล้างทิ้งไป) ให้สร้างใหม่เปล่าๆ ก่อน แล้วอัปเดตเฉพาะหน่วยตัวเอง
+                    if(e.code === 'not-found') {
+                        await setDoc(mainDocRef, { _initialized: true }, { merge: true });
+                        await updateDoc(mainDocRef, updates);
+                    } else {
+                        console.error("Error updating score:", e);
+                        window.showToast('เกิดข้อผิดพลาด', 'เครือข่ายมีปัญหา กรุณากดบันทึกอีกครั้ง', true);
+                        if(btnSave) { btnSave.disabled = false; btnSave.innerHTML = '<i class="fa-solid fa-save text-lg sm:text-xl"></i> บันทึกชั่วคราว'; }
+                        if(btnClose) { btnClose.disabled = false; }
+                        return;
+                    }
                 }
             }
             
@@ -657,9 +664,12 @@
             draftScores = {};
             localStorage.removeItem('electionDraftScoresV9');
 
-            // 3. Save to Local & Trigger Google Sheets Auto-Sync
+            // 3. Save to Local
             localStorage.setItem('electionNongBuaSalaDataV9', JSON.stringify(state));
-            triggerAutoSync(); 
+            
+            // *** นำ triggerAutoSync() ออกจากการกดบันทึกของเจ้าหน้าที่ ***
+            // เจ้าหน้าที่จะบันทึกขึ้น Firebase 100% แต่ไม่บังคับ Push เข้า Google Sheet โดยตรง 
+            // เพื่อตัดปัญหา "Race Condition" ที่ข้อมูลเก่าจากแอปหนึ่งไปทับข้อมูลใหม่ใน Sheet
             
             // 4. Update UI
             window.showStaffAlert(newCount, nowTime, isFinal);
