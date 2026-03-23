@@ -300,7 +300,11 @@
 
         // --- GOOGLE SHEET SYNC ---
         async function fetchFromGoogleSheet() {
-            if (!state.googleSheetUrl) return false;
+            // *** จุดแก้ไขสำคัญ ***
+            // หากเชื่อมต่อ Firebase ได้แล้ว ให้หยุดดึงจาก Google Sheet เด็ดขาด
+            // ป้องกันข้อมูลเก่าใน Sheet วิ่งมาทับข้อมูลใหม่ใน Firebase 
+            if (!state.googleSheetUrl || isFirebaseReady) return false;
+            
             try {
                 const response = await fetch(state.googleSheetUrl + '?action=load');
                 const result = await response.json();
@@ -355,10 +359,9 @@
         }
 
         // --- HELPERS ---
-        // ปรับปรุง: ให้เขต 2 คืนค่าหน่วยเป็น 1-17
         function getStationsForZone(zone) {
             if (zone === 1) return Array.from({ length: 13 }, (_, i) => i + 1);
-            if (zone === 2) return Array.from({ length: 17 }, (_, i) => i + 1); // เปลี่ยนจาก i + 14 เป็น i + 1
+            if (zone === 2) return Array.from({ length: 17 }, (_, i) => i + 1); 
             return [];
         }
 
@@ -370,7 +373,6 @@
             return total;
         }
 
-        // ปรับปรุง: การอ้างอิงรหัสคะแนน ให้ผูกกับทั้ง zone และ station เสมอ (ป้องกันการบันทึกชนกันระหว่างเขต 1 และ 2)
         function getSpecialScore(category, type, zone) {
             let total = 0;
             const zonesToProcess = zone === 0 ? [1, 2] : [zone];
@@ -435,7 +437,10 @@
         function startDashboardTimer() {
             if (dashboardInterval) clearInterval(dashboardInterval);
             dashboardInterval = setInterval(() => {
-                if (state.activeTab === 'dashboard' || state.activeTab === 'status') fetchFromGoogleSheet();
+                if (state.activeTab === 'dashboard' || state.activeTab === 'status') {
+                    // ดึงข้อมูลสำรองเฉพาะตอนที่ไม่ได้ต่อ Firebase 
+                    if (!isFirebaseReady) fetchFromGoogleSheet();
+                }
             }, 5000);
         }
 
