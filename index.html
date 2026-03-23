@@ -335,11 +335,10 @@
         // --- SAVE DATA (Admin / Global) ---
         function saveData() {
             if (isFirebaseReady) {
-                // Admin saves full state - perfectly fine as Admin is a single user
                 setDoc(mainDocRef, { ...state }, { merge: true }).catch(e => console.error(e));
             }
             localStorage.setItem('electionNongBuaSalaDataV9', JSON.stringify(state));
-            triggerAutoSync(); // Admin saves also trigger sheet backup
+            triggerAutoSync(); 
         }
 
         function initDefaultStaff() {
@@ -583,8 +582,6 @@
             }
         };
 
-        // --- ATOMIC SAVE DATA (For Staff Concurrency) ---
-        // *** ระบบรับประกันความถูกต้อง 100% สำหรับการบันทึกพร้อมกัน ***
         window.executeSaveStaffScores = async (isFinal) => {
             if (!state.isVotingOpen) return; 
 
@@ -596,8 +593,6 @@
             if(btnSave) { btnSave.disabled = true; btnSave.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> บันทึก...'; }
             if(btnClose) { btnClose.disabled = true; }
 
-            // 1. Prepare data updates specifically for this station (Atomic Fields)
-            // ระบุเจาะจงเฉพาะ Field ของหน่วยตัวเองเท่านั้น การอัปเดตแบบนี้ Firebase จะ Merge ให้อัตโนมัติ ไม่มีการทับกัน
             let updates = {};
             const eligible = parseInt(document.getElementById('input_eligible')?.value || 0);
             updates[`scores.z${zone}_s${station}_eligible`] = eligible;
@@ -641,12 +636,10 @@
             updates['lastUpdated'] = lastUpdatedStr;
             state.lastUpdated = lastUpdatedStr;
 
-            // 2. Perform Atomic Update to Firebase (This prevents data collisions perfectly)
             if (isFirebaseReady) {
                 try {
                     await updateDoc(mainDocRef, updates);
                 } catch (e) {
-                    // หากเอกสารหลักยังไม่เคยถูกสร้าง (ถูกล้างทิ้งไป) ให้สร้างใหม่เปล่าๆ ก่อน แล้วอัปเดตเฉพาะหน่วยตัวเอง
                     if(e.code === 'not-found') {
                         await setDoc(mainDocRef, { _initialized: true }, { merge: true });
                         await updateDoc(mainDocRef, updates);
@@ -660,24 +653,16 @@
                 }
             }
             
-            // ล้างค่าร่าง (Draft) เมื่อบันทึกสำเร็จ
             draftScores = {};
             localStorage.removeItem('electionDraftScoresV9');
 
-            // 3. Save to Local
             localStorage.setItem('electionNongBuaSalaDataV9', JSON.stringify(state));
             
-            // *** นำ triggerAutoSync() ออกจากการกดบันทึกของเจ้าหน้าที่ ***
-            // เจ้าหน้าที่จะบันทึกขึ้น Firebase 100% แต่ไม่บังคับ Push เข้า Google Sheet โดยตรง 
-            // เพื่อตัดปัญหา "Race Condition" ที่ข้อมูลเก่าจากแอปหนึ่งไปทับข้อมูลใหม่ใน Sheet
-            
-            // 4. Update UI
             window.showStaffAlert(newCount, nowTime, isFinal);
             renderApp(); 
             updateTimerUI();
         };
 
-        // --- ADMIN CONTROLS ---
         window.toggleVotingStatus = () => {
             state.isVotingOpen = !state.isVotingOpen;
             saveData();
@@ -719,10 +704,8 @@
             btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> กำลังบันทึกข้อมูล...';
             btn.disabled = true;
 
-            // ส่งข้อมูลทั้งหมดเข้าฐานข้อมูล
             saveData();
 
-            // สร้าง Animation แสดงความสำเร็จ
             setTimeout(() => {
                 btn.innerHTML = '<i class="fa-solid fa-check-circle"></i> บันทึกการตั้งค่าสำเร็จ';
                 btn.classList.replace('bg-indigo-600', 'bg-emerald-600');
@@ -754,7 +737,6 @@
             }, 1500);
         };
 
-        // --- RENDER FUNCTIONS ---
         function renderNav() {
             let tabs = [{ id: 'dashboard', icon: 'fa-desktop', text: 'มอนิเตอร์' }];
             if (!state.currentUser) tabs.push({ id: 'login', icon: 'fa-right-to-bracket', text: 'เข้าสู่ระบบ' });
@@ -1041,92 +1023,6 @@
             return html;
         }
 
-        function renderStatus() {
-            let html = `<div class="max-w-6xl mx-auto space-y-6 fade-in mt-4 sm:mt-8 px-4 sm:px-0">
-                <div class="bg-white rounded-3xl shadow-sm border border-slate-100 p-4 sm:p-5 md:p-8">
-                    <div class="flex items-center gap-3 sm:gap-4 mb-5 sm:mb-6 border-b border-slate-100 pb-4 sm:pb-5">
-                        <div class="bg-indigo-600 p-2.5 sm:p-3 md:p-4 rounded-xl sm:rounded-2xl text-white shadow-sm">
-                            <i class="fa-solid fa-tower-broadcast text-lg sm:text-xl md:text-2xl"></i>
-                        </div>
-                        <div>
-                            <h2 class="text-xl sm:text-2xl md:text-3xl font-bold text-slate-800">สถานะการส่งข้อมูล (เรียลไทม์)</h2>
-                            <p class="text-slate-500 font-medium mt-0.5 sm:mt-1 text-xs sm:text-sm md:text-base">ตรวจสอบความเคลื่อนไหวและสถิติแต่ละหน่วย</p>
-                        </div>
-                    </div>
-                    
-                    <div class="flex flex-wrap items-center gap-2 sm:gap-3 text-[10px] sm:text-xs font-bold bg-slate-50 px-3 py-2.5 rounded-xl border border-slate-200 mb-6">
-                        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-indigo-600"></span> ปิดหีบแล้ว</span>
-                        <span class="flex items-center gap-1 ml-2"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span> อัปเดตล่าสุด (<15น.)</span>
-                        <span class="flex items-center gap-1 ml-2"><span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span> อัปเดตนานแล้ว</span>
-                        <span class="flex items-center gap-1 ml-2"><span class="w-2.5 h-2.5 rounded-full bg-slate-300"></span> รอข้อมูล</span>
-                    </div>
-
-                    <div class="grid grid-cols-1 gap-6 sm:gap-8">
-            `;
-
-            [1, 2].forEach(zone => {
-                html += `
-                    <div class="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
-                        <div class="bg-slate-50 px-4 py-3 border-b border-slate-200">
-                            <h4 class="font-bold text-slate-800 text-base sm:text-lg">เขตเลือกตั้งที่ ${zone}</h4>
-                        </div>
-                        <div class="p-4 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
-                `;
-                
-                getStationsForZone(zone).forEach(s => {
-                    const key = `${zone}_${s}`;
-                    const lastUpd = state.stationLastUpdated[key];
-                    const isClosed = state.stationClosed[key];
-                    const submitCount = state.stationSubmitCount[key] || 0;
-                    
-                    if (isClosed) {
-                        const stats = getStationMayorStats(zone, s); 
-                        const turnoutPercent = stats.eligible > 0 ? ((stats.turnout / stats.eligible) * 100).toFixed(1) : "0.0";
-                        
-                        html += `
-                            <div class="bg-white border-2 border-indigo-400 rounded-xl p-3 shadow-md flex flex-col relative overflow-hidden transition-all hover:scale-105">
-                                <div class="absolute -right-3 -top-3 text-indigo-50 opacity-40 text-6xl pointer-events-none"><i class="fa-solid fa-box-archive"></i></div>
-                                <div class="flex justify-between items-center mb-2 border-b border-slate-100 pb-2 relative z-10">
-                                    <span class="font-black text-slate-800 text-sm">หน่วย ${s}</span>
-                                    <span class="bg-indigo-100 text-indigo-700 text-[9px] font-bold px-1.5 py-0.5 rounded border border-indigo-200 flex items-center gap-1"><i class="fa-solid fa-check"></i> ปิดหีบ</span>
-                                </div>
-                                <div class="space-y-1 text-[11px] sm:text-xs relative z-10">
-                                    <div class="flex justify-between"><span class="text-slate-500">นับครั้งที่</span> <span class="font-bold text-slate-700">${submitCount}</span></div>
-                                    <div class="flex justify-between"><span class="text-slate-500">ผู้มีสิทธิ์</span> <span class="font-bold text-slate-700">${stats.eligible.toLocaleString()}</span></div>
-                                    <div class="flex justify-between"><span class="text-slate-500">มาใช้สิทธิ์</span> <span class="font-bold text-indigo-600">${stats.turnout.toLocaleString()}</span></div>
-                                    <div class="flex justify-between"><span class="text-slate-500">คิดเป็น</span> <span class="font-bold text-indigo-600">${turnoutPercent}%</span></div>
-                                    <div class="w-full h-px bg-slate-100 my-1"></div>
-                                    <div class="flex justify-between"><span class="text-slate-500">บัตรดี</span> <span class="font-bold text-emerald-600">${stats.valid.toLocaleString()}</span></div>
-                                    <div class="flex justify-between"><span class="text-slate-500">บัตรเสีย</span> <span class="font-bold text-rose-600">${stats.invalid.toLocaleString()}</span></div>
-                                    <div class="flex justify-between"><span class="text-slate-500">ไม่ประสงค์</span> <span class="font-bold text-slate-600">${stats.novote.toLocaleString()}</span></div>
-                                </div>
-                            </div>
-                        `;
-                    } else {
-                        let statusClass = "bg-slate-50 text-slate-400 border-slate-200", text = "รอข้อมูล", badgeClass = "bg-slate-200 text-slate-500";
-                        if (lastUpd) {
-                            if ((Date.now() - lastUpd)/60000 <= 15) { statusClass = "bg-emerald-50 text-emerald-700 border-emerald-200 shadow-sm"; badgeClass = "bg-emerald-500 text-white shadow-sm"; } 
-                            else { statusClass = "bg-amber-50 text-amber-700 border-amber-200 shadow-sm"; badgeClass = "bg-amber-500 text-white shadow-sm"; }
-                            text = new Date(lastUpd).toLocaleTimeString('th-TH', {hour: '2-digit', minute:'2-digit'});
-                        }
-                        
-                        let countHtml = submitCount > 0 ? `<div class="mt-1 text-[9px] sm:text-[10px] bg-white/60 px-2 py-0.5 rounded-full font-bold text-slate-600 shadow-sm">ส่ง ${submitCount} ครั้ง</div>` : '';
-                        
-                        html += `
-                            <div class="flex flex-col items-center justify-center py-3 sm:py-4 px-1 sm:px-2 rounded-xl border ${statusClass} transition-all hover:scale-105 cursor-default h-full relative">
-                                <div class="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center font-black text-sm sm:text-base ${badgeClass} mb-1.5 sm:mb-2">${s}</div>
-                                <span class="text-[10px] sm:text-xs font-bold tracking-tighter">${text}</span>
-                                ${countHtml}
-                            </div>
-                        `;
-                    }
-                });
-                html += `</div></div>`;
-            });
-            html += `</div></div></div>`;
-            return html;
-        }
-        
         function renderLogin() {
             let html = `<div class="max-w-md mx-auto fade-in mt-4 sm:mt-10 px-4 sm:px-0"><div class="bg-white rounded-3xl shadow-xl shadow-indigo-100/50 border border-slate-100 overflow-hidden"><div class="flex border-b border-slate-100">
                 <button onclick="setLoginMode('staff')" class="flex-1 py-3 sm:py-4 text-center font-bold text-xs sm:text-sm transition-colors ${state.loginMode === 'staff' ? 'bg-indigo-600 text-white' : 'bg-slate-50 text-slate-500 hover:bg-slate-100'}"><i class="fa-solid fa-user-pen mr-1 sm:mr-2"></i> เจ้าหน้าที่กรอกคะแนน</button>
@@ -1303,6 +1199,96 @@
                 <button id="btn-save-staff" onclick="saveStaffScores(false)" class="w-full sm:flex-1 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-black py-3 sm:py-4 md:py-5 px-4 rounded-xl sm:rounded-2xl shadow-[0_10px_20px_-10px_rgba(16,185,129,0.5)] flex items-center justify-center gap-2 transition-transform active:scale-95 text-base sm:text-lg md:text-xl border-b-4 border-teal-800 order-1 sm:order-2"><i class="fa-solid fa-save text-lg sm:text-xl"></i> บันทึกชั่วคราว</button>
             </div>
             </div></div></div>`;
+            return html;
+        }
+
+        function renderStatus() {
+            let html = `
+                <div class="w-full max-w-[1920px] mx-auto fade-in mt-2 sm:mt-4 px-2 lg:px-4 h-auto lg:h-[calc(100vh-5.5rem)] flex flex-col min-h-[600px]">
+                    <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-3 sm:p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 shrink-0 mb-3 sm:mb-4">
+                        <div class="flex items-center gap-3">
+                            <div class="bg-indigo-600 p-2 sm:p-2.5 rounded-xl text-white shadow-sm">
+                                <i class="fa-solid fa-tower-broadcast text-lg sm:text-xl"></i>
+                            </div>
+                            <div>
+                                <h2 class="text-lg sm:text-xl md:text-2xl font-bold text-slate-800 leading-tight">สถานะการส่งข้อมูล (เรียลไทม์)</h2>
+                                <p class="text-slate-500 font-medium text-[10px] sm:text-xs">ตรวจสอบความเคลื่อนไหวและสถิติแต่ละหน่วยแบบ Dashboard 16:9</p>
+                            </div>
+                        </div>
+                        
+                        <div class="flex flex-wrap items-center gap-2 text-[9px] sm:text-[10px] font-bold bg-slate-50 px-2 sm:px-3 py-1.5 sm:py-2 rounded-lg border border-slate-200">
+                            <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-indigo-600"></span> ปิดหีบแล้ว</span>
+                            <span class="flex items-center gap-1 ml-1 sm:ml-2"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span> อัปเดต (<15น.)</span>
+                            <span class="flex items-center gap-1 ml-1 sm:ml-2"><span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span> นานแล้ว</span>
+                            <span class="flex items-center gap-1 ml-1 sm:ml-2"><span class="w-2.5 h-2.5 rounded-full bg-slate-300"></span> รอข้อมูล</span>
+                        </div>
+                    </div>
+
+                    <div class="flex flex-col lg:flex-row gap-3 sm:gap-4 flex-1 min-h-0 overflow-y-visible lg:overflow-hidden pb-4">
+            `;
+
+            [1, 2].forEach(zone => {
+                const stations = getStationsForZone(zone);
+                const totalStations = stations.length;
+                html += `
+                        <div class="flex-1 bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm flex flex-col h-auto lg:h-full">
+                            <div class="bg-slate-800 text-white px-3 sm:px-4 py-2 sm:py-2.5 flex justify-between items-center shrink-0 border-b border-slate-700">
+                                <h4 class="font-bold text-sm sm:text-base flex items-center gap-2"><i class="fa-solid fa-map-location-dot text-slate-400"></i> เขตเลือกตั้งที่ ${zone}</h4>
+                                <span class="bg-slate-700 px-2 py-0.5 rounded text-[10px] sm:text-xs font-medium">${totalStations} หน่วย</span>
+                            </div>
+                            <div class="p-2 sm:p-3 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-2 sm:gap-3 overflow-y-visible lg:overflow-y-auto content-start flex-1 bg-slate-50/50">
+                `;
+                
+                stations.forEach(s => {
+                    const key = `${zone}_${s}`;
+                    const lastUpd = state.stationLastUpdated[key];
+                    const isClosed = state.stationClosed[key];
+                    const submitCount = state.stationSubmitCount[key] || 0;
+                    
+                    if (isClosed) {
+                        const stats = getStationMayorStats(zone, s); 
+                        const turnoutPercent = stats.eligible > 0 ? ((stats.turnout / stats.eligible) * 100).toFixed(1) : "0.0";
+                        
+                        html += `
+                                <div class="bg-indigo-50 border-2 border-indigo-400 rounded-xl p-2 shadow-sm flex flex-col relative transition-all hover:scale-[1.02]">
+                                    <div class="absolute -right-2 -top-2 text-indigo-200 text-4xl pointer-events-none opacity-40"><i class="fa-solid fa-box-archive"></i></div>
+                                    <div class="flex justify-between items-start mb-1.5 z-10 relative">
+                                        <div class="flex items-baseline gap-1 bg-white px-1.5 py-0.5 rounded-md shadow-sm border border-indigo-100">
+                                            <span class="text-[9px] text-indigo-500 font-bold">หน่วย</span>
+                                            <span class="font-black text-indigo-900 text-lg leading-none">${s}</span>
+                                        </div>
+                                        <span class="bg-indigo-600 text-white text-[8px] font-bold px-1.5 py-0.5 rounded shadow-sm"><i class="fa-solid fa-check"></i> ปิดหีบ</span>
+                                    </div>
+                                    <div class="space-y-0.5 text-[9px] sm:text-[10px] z-10 relative bg-white/70 p-1.5 rounded-lg border border-indigo-100">
+                                        <div class="flex justify-between"><span class="text-slate-500">ใช้สิทธิ์</span> <span class="font-bold text-indigo-700">${stats.turnout.toLocaleString()}<span class="text-[7px] sm:text-[8px] text-slate-400">/${stats.eligible.toLocaleString()}</span></span></div>
+                                        <div class="flex justify-between"><span class="text-slate-500">คิดเป็น</span> <span class="font-bold text-indigo-700">${turnoutPercent}%</span></div>
+                                        <div class="h-px bg-indigo-100 my-0.5 w-full"></div>
+                                        <div class="flex justify-between"><span class="text-slate-500">ดี/เสีย/ไม่</span> <span class="font-bold text-slate-700">${stats.valid}/${stats.invalid}/${stats.novote}</span></div>
+                                    </div>
+                                </div>
+                        `;
+                    } else {
+                        let statusClass = "bg-white border-slate-200 shadow-sm", text = "รอข้อมูล", badgeClass = "bg-slate-200 text-slate-500", textClass="text-slate-400";
+                        if (lastUpd) {
+                            if ((Date.now() - lastUpd)/60000 <= 15) { statusClass = "bg-emerald-50 border-emerald-200 shadow-sm"; badgeClass = "bg-emerald-500 text-white shadow-md"; textClass="text-emerald-700"; } 
+                            else { statusClass = "bg-amber-50 border-amber-200 shadow-sm"; badgeClass = "bg-amber-500 text-white shadow-md"; textClass="text-amber-700"; }
+                            text = new Date(lastUpd).toLocaleTimeString('th-TH', {hour: '2-digit', minute:'2-digit'});
+                        }
+                        
+                        let countHtml = submitCount > 0 ? `<div class="mt-1 text-[8px] sm:text-[9px] bg-white px-2 py-0.5 rounded-md font-bold text-slate-500 border border-slate-200 shadow-sm flex items-center gap-1"><i class="fa-solid fa-rotate-right"></i> ${submitCount} ครั้ง</div>` : '';
+                        
+                        html += `
+                                <div class="flex flex-col items-center justify-center py-3 px-1 rounded-xl border ${statusClass} transition-all hover:scale-[1.02] cursor-default h-full min-h-[90px] sm:min-h-[100px] relative">
+                                    <div class="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center font-black text-sm sm:text-base ${badgeClass} mb-1">${s}</div>
+                                    <span class="text-[9px] sm:text-[10px] font-bold tracking-tighter ${textClass}">${text}</span>
+                                    ${countHtml}
+                                </div>
+                        `;
+                    }
+                });
+                html += `</div></div>`;
+            });
+            html += `</div></div>`;
             return html;
         }
 
