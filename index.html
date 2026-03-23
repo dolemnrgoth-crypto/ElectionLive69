@@ -349,8 +349,11 @@
             [1, 2].forEach(zone => {
                 getStationsForZone(zone).forEach(s => {
                     const key = `${zone}_${s}`;
-                    if (!state.staffAccounts[key]) {
-                        state.staffAccounts[key] = { name: `เจ้าหน้าที่ประจำหน่วย ${s}`, pin: "1234" };
+                    // อัปเดตรหัสผ่านอัตโนมัติ หากยังไม่มี หรือยังเป็นรหัสเก่า (1234)
+                    if (!state.staffAccounts[key] || state.staffAccounts[key].pin === "1234") {
+                        // สร้างรหัส 4 หลัก: เลขเขต + 0 + เลขหน่วย (เช่น 1001, 2017)
+                        const pin = `${zone}${s.toString().padStart(3, '0')}`;
+                        state.staffAccounts[key] = { name: `เจ้าหน้าที่หน่วย ${s} (เขต ${zone})`, pin: pin };
                         changed = true;
                     }
                 });
@@ -1369,9 +1372,10 @@
         window.onload = async () => {
             loadLocalData();
             await fetchFromGoogleSheet();
-            if (Object.keys(state.staffAccounts).length === 0) {
-                initDefaultStaff();
-            }
+            
+            // บังคับรันตรวจสอบและอัปเดตบัญชี/รหัสผ่าน ทุกครั้งที่โหลดเว็บ
+            initDefaultStaff();
+            
             if (state.currentUser && state.activeTab === 'login') {
                 if (state.currentUser.role === 'admin') state.activeTab = 'status';
                 else {
