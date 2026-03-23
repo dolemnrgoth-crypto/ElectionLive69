@@ -96,7 +96,7 @@
             loginStation: 1
         };
 
-        // NEW: ตัวแปรเก็บค่าร่างที่พิมพ์ค้างไว้ (Auto-Save Draft) ป้องกันแอปดับ
+        // ตัวแปรเก็บค่าร่างที่พิมพ์ค้างไว้ (Auto-Save Draft) ป้องกันแอปดับ
         let draftScores = JSON.parse(localStorage.getItem('electionDraftScoresV9')) || {};
 
         let timerInterval = null;
@@ -355,38 +355,49 @@
         }
 
         // --- HELPERS ---
+        // ปรับปรุง: ให้เขต 2 คืนค่าหน่วยเป็น 1-17
         function getStationsForZone(zone) {
             if (zone === 1) return Array.from({ length: 13 }, (_, i) => i + 1);
-            if (zone === 2) return Array.from({ length: 17 }, (_, i) => i + 14);
+            if (zone === 2) return Array.from({ length: 17 }, (_, i) => i + 1); // เปลี่ยนจาก i + 14 เป็น i + 1
             return [];
         }
+
         function getTotalScore(candidateId) {
             let total = 0;
             for (const [key, value] of Object.entries(state.scores)) {
-                if (key.endsWith(`_candidate_${candidateId}`)) total += parseInt(value || 0);
+                if (key.includes(`_candidate_${candidateId}`)) total += parseInt(value || 0);
             }
             return total;
         }
+
+        // ปรับปรุง: การอ้างอิงรหัสคะแนน ให้ผูกกับทั้ง zone และ station เสมอ (ป้องกันการบันทึกชนกันระหว่างเขต 1 และ 2)
         function getSpecialScore(category, type, zone) {
             let total = 0;
-            const stations = zone === 0 ? [...getStationsForZone(1), ...getStationsForZone(2)] : getStationsForZone(zone);
-            stations.forEach(s => { total += parseInt(state.scores[`station_${s}_${category}_${type}`] || 0); });
-            return total;
-        }
-        function getCandidateScoreByZone(candidateId, zone) {
-            let total = 0;
-            getStationsForZone(zone).forEach(s => { total += parseInt(state.scores[`station_${s}_candidate_${candidateId}`] || 0); });
+            const zonesToProcess = zone === 0 ? [1, 2] : [zone];
+            zonesToProcess.forEach(z => {
+                getStationsForZone(z).forEach(s => { 
+                    total += parseInt(state.scores[`z${z}_s${s}_${category}_${type}`] || 0); 
+                });
+            });
             return total;
         }
 
-        function getStationMayorStats(station) {
+        function getCandidateScoreByZone(candidateId, zone) {
+            let total = 0;
+            getStationsForZone(zone).forEach(s => { 
+                total += parseInt(state.scores[`z${zone}_s${s}_candidate_${candidateId}`] || 0); 
+            });
+            return total;
+        }
+
+        function getStationMayorStats(zone, station) {
             let valid = 0;
             state.mayorCandidates.forEach(c => {
-                valid += parseInt(state.scores[`station_${station}_candidate_${c.id}`] || 0);
+                valid += parseInt(state.scores[`z${zone}_s${station}_candidate_${c.id}`] || 0);
             });
-            const invalid = parseInt(state.scores[`station_${station}_mayor_invalid`] || 0);
-            const novote = parseInt(state.scores[`station_${station}_mayor_novote`] || 0);
-            const eligible = parseInt(state.scores[`station_${station}_eligible`] || 0);
+            const invalid = parseInt(state.scores[`z${zone}_s${station}_mayor_invalid`] || 0);
+            const novote = parseInt(state.scores[`z${zone}_s${station}_mayor_novote`] || 0);
+            const eligible = parseInt(state.scores[`z${zone}_s${station}_eligible`] || 0);
             const turnout = valid + invalid + novote;
             return { valid, invalid, novote, turnout, eligible };
         }
@@ -437,7 +448,7 @@
         // --- WINDOW EVENTS ---
         window.changeTab = (tab) => { 
             if (tab === 'input' && state.currentUser?.role === 'staff') {
-                const sKey = `station_${state.currentUser.station}_eligible`;
+                const sKey = `z${state.currentUser.zone}_s${state.currentUser.station}_eligible`;
                 if (state.scores[sKey] === undefined) {
                     tab = 'staffInit';
                 }
@@ -459,7 +470,7 @@
             if (matchedStation !== null) {
                 state.currentUser = { role: 'staff', zone, station: matchedStation, name: matchedName };
                 
-                if (state.scores[`station_${matchedStation}_eligible`] === undefined) {
+                if (state.scores[`z${zone}_s${matchedStation}_eligible`] === undefined) {
                     state.activeTab = 'staffInit';
                     renderApp();
                 } else {
@@ -516,7 +527,7 @@
                 const enteredPin = document.getElementById('confirm-init-pin').value;
                 if (enteredPin === correctPin) {
                     modal.remove();
-                    state.scores[`station_${station}_eligible`] = parseInt(eligible);
+                    state.scores[`z${zone}_s${station}_eligible`] = parseInt(eligible);
                     saveData();
                     window.showToast('สำเร็จ', 'บันทึกข้อมูลหน่วยเริ่มต้นเรียบร้อยแล้ว');
                     state.activeTab = 'input';
@@ -581,27 +592,27 @@
             if(btnSave) { btnSave.disabled = true; btnSave.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> บันทึก...'; }
             if(btnClose) { btnClose.disabled = true; }
 
-            // 1. Prepare data updates specifically for this station
+            // 1. Prepare data updates specifically for this station using unique zone+station key
             let updates = {};
             const eligible = parseInt(document.getElementById('input_eligible')?.value || 0);
-            updates[`scores.station_${station}_eligible`] = eligible;
-            state.scores[`station_${station}_eligible`] = eligible;
+            updates[`scores.z${zone}_s${station}_eligible`] = eligible;
+            state.scores[`z${zone}_s${station}_eligible`] = eligible;
 
             state.mayorCandidates.forEach(c => { 
                 let v = parseInt(document.getElementById(`input_m_${c.id}`)?.value || 0);
-                updates[`scores.station_${station}_candidate_${c.id}`] = v; 
-                state.scores[`station_${station}_candidate_${c.id}`] = v;
+                updates[`scores.z${zone}_s${station}_candidate_${c.id}`] = v; 
+                state.scores[`z${zone}_s${station}_candidate_${c.id}`] = v;
             });
             state.councilCandidates[zone].forEach(c => { 
                 let v = parseInt(document.getElementById(`input_c_${c.id}`)?.value || 0);
-                updates[`scores.station_${station}_candidate_${c.id}`] = v; 
-                state.scores[`station_${station}_candidate_${c.id}`] = v;
+                updates[`scores.z${zone}_s${station}_candidate_${c.id}`] = v; 
+                state.scores[`z${zone}_s${station}_candidate_${c.id}`] = v;
             });
 
             ['mayor_novote', 'mayor_invalid', 'council_novote', 'council_invalid'].forEach(f => {
                 let v = parseInt(document.getElementById(`input_${f.charAt(0)}_${f.split('_')[1]}`)?.value || 0);
-                updates[`scores.station_${station}_${f}`] = v;
-                state.scores[`station_${station}_${f}`] = v;
+                updates[`scores.z${zone}_s${station}_${f}`] = v;
+                state.scores[`z${zone}_s${station}_${f}`] = v;
             });
             
             const nowMs = Date.now();
@@ -625,7 +636,7 @@
             updates['lastUpdated'] = lastUpdatedStr;
             state.lastUpdated = lastUpdatedStr;
 
-            // 2. Perform Atomic Update to Firebase
+            // 2. Perform Atomic Update to Firebase (This prevents data collisions perfectly)
             if (isFirebaseReady) {
                 try {
                     await updateDoc(mainDocRef, updates);
@@ -634,7 +645,7 @@
                 }
             }
             
-            // NEW: ล้างค่าร่าง (Draft) เมื่อบันทึกสำเร็จ
+            // ล้างค่าร่าง (Draft) เมื่อบันทึกสำเร็จ
             draftScores = {};
             localStorage.removeItem('electionDraftScoresV9');
 
@@ -719,9 +730,6 @@
             document.getElementById('mobile-nav').innerHTML = mobileNavHtml;
         }
 
-        // ==========================================
-        // 16:9 FULLSCREEN DASHBOARD RENDERER
-        // ==========================================
         function renderDashboard() {
             const mayorCandidatesSorted = [...state.mayorCandidates].map(c => ({ ...c, score: getTotalScore(c.id) })).sort((a, b) => a.number - b.number);
             const m1 = mayorCandidatesSorted[0], m2 = mayorCandidatesSorted[1];
@@ -984,10 +992,6 @@
             return html;
         }
 
-        // ==========================================
-        // OTHER PAGES (Status, Settings, Input, Login, Init)
-        // ==========================================
-        
         function renderStatus() {
             let html = `<div class="max-w-6xl mx-auto space-y-6 fade-in mt-4 sm:mt-8 px-4 sm:px-0">
                 <div class="bg-white rounded-3xl shadow-sm border border-slate-100 p-4 sm:p-5 md:p-8">
@@ -1027,7 +1031,7 @@
                     const submitCount = state.stationSubmitCount[key] || 0;
                     
                     if (isClosed) {
-                        const stats = getStationMayorStats(s); 
+                        const stats = getStationMayorStats(zone, s); 
                         const turnoutPercent = stats.eligible > 0 ? ((stats.turnout / stats.eligible) * 100).toFixed(1) : "0.0";
                         
                         html += `
@@ -1080,7 +1084,7 @@
                 <button onclick="setLoginMode('admin')" class="flex-1 py-3 sm:py-4 text-center font-bold text-xs sm:text-sm transition-colors ${state.loginMode === 'admin' ? 'bg-indigo-600 text-white' : 'bg-slate-50 text-slate-500 hover:bg-slate-100'}"><i class="fa-solid fa-user-shield mr-1 sm:mr-2"></i> ผู้ดูแลระบบ (Admin)</button></div><div class="p-6 sm:p-8">`;
 
             if (state.loginMode === 'staff') {
-                html += `<div class="text-center mb-5 sm:mb-6"><div class="w-12 h-12 sm:w-16 sm:h-16 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-2 sm:mb-3"><i class="fa-solid fa-location-dot text-xl sm:text-2xl"></i></div><h2 class="text-xl sm:text-2xl font-bold text-slate-800">เข้าสู่ระบบประจำหน่วย</h2><p class="text-slate-500 text-xs sm:text-sm mt-1 sm:mt-2">ระบบจะนำท่านเข้าสู่หน่วยอัตโนมัติตามรหัสผ่าน</p></div><div class="space-y-3 sm:space-y-4"><div><label class="block text-xs sm:text-sm font-bold text-slate-700 mb-1">เขตเลือกตั้ง</label><select onchange="updateLoginZone(this.value)" class="w-full border-slate-300 rounded-xl shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2.5 sm:p-3 border bg-slate-50 font-medium text-base sm:text-lg"><option value="1" ${state.loginZone === 1 ? 'selected' : ''}>เขตที่ 1 (หน่วย 1-13)</option><option value="2" ${state.loginZone === 2 ? 'selected' : ''}>เขตที่ 2 (หน่วย 14-30)</option></select></div><div><label class="block text-xs sm:text-sm font-bold text-slate-700 mb-1">รหัสผ่านประจำหน่วย (PIN)</label><input type="password" id="login-pin" class="w-full border-slate-300 rounded-xl shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2.5 sm:p-3 border bg-slate-50 tracking-widest font-bold text-center text-xl sm:text-2xl" placeholder="••••" /></div><button onclick="loginAsStaff()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 sm:py-4 px-4 rounded-xl shadow-md transition-all mt-2 sm:mt-4 text-base sm:text-lg">เข้าสู่ระบบ</button></div>`;
+                html += `<div class="text-center mb-5 sm:mb-6"><div class="w-12 h-12 sm:w-16 sm:h-16 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-2 sm:mb-3"><i class="fa-solid fa-location-dot text-xl sm:text-2xl"></i></div><h2 class="text-xl sm:text-2xl font-bold text-slate-800">เข้าสู่ระบบประจำหน่วย</h2><p class="text-slate-500 text-xs sm:text-sm mt-1 sm:mt-2">ระบบจะนำท่านเข้าสู่หน่วยอัตโนมัติตามรหัสผ่าน</p></div><div class="space-y-3 sm:space-y-4"><div><label class="block text-xs sm:text-sm font-bold text-slate-700 mb-1">เขตเลือกตั้ง</label><select onchange="updateLoginZone(this.value)" class="w-full border-slate-300 rounded-xl shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2.5 sm:p-3 border bg-slate-50 font-medium text-base sm:text-lg"><option value="1" ${state.loginZone === 1 ? 'selected' : ''}>เขตที่ 1 (หน่วย 1-13)</option><option value="2" ${state.loginZone === 2 ? 'selected' : ''}>เขตที่ 2 (หน่วย 1-17)</option></select></div><div><label class="block text-xs sm:text-sm font-bold text-slate-700 mb-1">รหัสผ่านประจำหน่วย (PIN)</label><input type="password" id="login-pin" class="w-full border-slate-300 rounded-xl shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2.5 sm:p-3 border bg-slate-50 tracking-widest font-bold text-center text-xl sm:text-2xl" placeholder="••••" /></div><button onclick="loginAsStaff()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 sm:py-4 px-4 rounded-xl shadow-md transition-all mt-2 sm:mt-4 text-base sm:text-lg">เข้าสู่ระบบ</button></div>`;
             } else {
                 html += `<div class="text-center mb-5 sm:mb-6"><div class="w-12 h-12 sm:w-16 sm:h-16 bg-slate-100 text-slate-600 rounded-full flex items-center justify-center mx-auto mb-2 sm:mb-3"><i class="fa-solid fa-lock text-xl sm:text-2xl"></i></div><h2 class="text-xl sm:text-2xl font-bold text-slate-800">สำหรับผู้ดูแลระบบ</h2></div><div class="space-y-3 sm:space-y-4"><div><label class="block text-xs sm:text-sm font-bold text-slate-700 mb-1">รหัสผ่าน Admin</label><input type="password" id="login-admin-pin" class="w-full border-slate-300 rounded-xl shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2.5 sm:p-3 border bg-slate-50 tracking-widest font-bold text-center text-lg sm:text-xl" placeholder="••••" /></div><button onclick="loginAsAdmin()" class="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-3 sm:py-3.5 px-4 rounded-xl shadow-md transition-all mt-2 sm:mt-4 text-sm sm:text-base">เข้าสู่ระบบผู้จัดการ</button></div>`;
             }
@@ -1157,7 +1161,7 @@
                 ? new Date(state.stationLastUpdated[key]).toLocaleTimeString('th-TH', {hour: '2-digit', minute:'2-digit'}) 
                 : '-';
             
-            const eligibleVoters = draftScores['input_eligible'] !== undefined ? draftScores['input_eligible'] : (state.scores[`station_${station}_eligible`] || '');
+            const eligibleVoters = draftScores['input_eligible'] !== undefined ? draftScores['input_eligible'] : (state.scores[`z${zone}_s${station}_eligible`] || '');
 
             let html = `
                 <div class="max-w-2xl mx-auto fade-in pb-32 sm:pb-0">
@@ -1203,12 +1207,11 @@
             `;
             
             myMayor.forEach(c => {
-                const key = `station_${station}_candidate_${c.id}`;
-                const val = draftScores[`input_m_${c.id}`] !== undefined ? draftScores[`input_m_${c.id}`] : (state.scores[key] || '');
+                const val = draftScores[`input_m_${c.id}`] !== undefined ? draftScores[`input_m_${c.id}`] : (state.scores[`z${zone}_s${station}_candidate_${c.id}`] || '');
                 html += `<div class="flex flex-row items-center p-3 sm:p-4 bg-white rounded-2xl border-2 border-slate-100 focus-within:border-amber-400 focus-within:ring-4 focus-within:ring-amber-50 transition-all shadow-sm gap-3"><div class="w-10 h-10 sm:w-12 sm:h-12 md:w-14 md:h-14 bg-slate-100 rounded-xl flex items-center justify-center font-black text-lg sm:text-xl md:text-2xl text-slate-600 flex-shrink-0">${c.number}</div><div class="flex-1 min-w-0 pr-2"><h4 class="font-bold text-slate-800 text-sm md:text-lg leading-tight break-words">${c.name}</h4></div><div class="w-24 sm:w-28 md:w-32 flex-shrink-0"><input type="number" min="0" id="input_m_${c.id}" value="${val}" oninput="handleDraftInput(this.id, this.value)" class="w-full text-right bg-slate-50 border border-slate-200 rounded-xl p-2.5 sm:p-3 md:p-4 font-black text-lg sm:text-2xl md:text-3xl text-amber-600 focus:outline-none focus:bg-white" placeholder="0" /></div></div>`;
             });
-            const mNoVote = draftScores['input_m_novote'] !== undefined ? draftScores['input_m_novote'] : (state.scores[`station_${station}_mayor_novote`] || '');
-            const mInvalid = draftScores['input_m_invalid'] !== undefined ? draftScores['input_m_invalid'] : (state.scores[`station_${station}_mayor_invalid`] || '');
+            const mNoVote = draftScores['input_m_novote'] !== undefined ? draftScores['input_m_novote'] : (state.scores[`z${zone}_s${station}_mayor_novote`] || '');
+            const mInvalid = draftScores['input_m_invalid'] !== undefined ? draftScores['input_m_invalid'] : (state.scores[`z${zone}_s${station}_mayor_invalid`] || '');
             html += `
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
                     <div class="bg-slate-50 p-3 rounded-xl border border-slate-200 flex items-center justify-between">
@@ -1227,12 +1230,11 @@
                 <div class="space-y-2 sm:space-y-3">`;
             
             myCouncil.forEach(c => {
-                const key = `station_${station}_candidate_${c.id}`;
-                const val = draftScores[`input_c_${c.id}`] !== undefined ? draftScores[`input_c_${c.id}`] : (state.scores[key] || '');
+                const val = draftScores[`input_c_${c.id}`] !== undefined ? draftScores[`input_c_${c.id}`] : (state.scores[`z${zone}_s${station}_candidate_${c.id}`] || '');
                 html += `<div class="flex flex-row items-center p-3 sm:p-4 bg-white rounded-2xl border-2 border-slate-100 focus-within:border-blue-400 focus-within:ring-4 focus-within:ring-blue-50 transition-all shadow-sm gap-3"><div class="w-10 h-10 sm:w-12 sm:h-12 md:w-14 md:h-14 bg-slate-100 rounded-xl flex items-center justify-center font-black text-lg sm:text-xl md:text-2xl text-slate-600 flex-shrink-0">${c.number}</div><div class="flex-1 min-w-0 pr-2"><h4 class="font-bold text-slate-800 text-sm md:text-base leading-tight break-words">${c.name}</h4></div><div class="w-20 sm:w-24 md:w-28 flex-shrink-0"><input type="number" min="0" id="input_c_${c.id}" value="${val}" oninput="handleDraftInput(this.id, this.value)" class="w-full text-right bg-slate-50 border border-slate-200 rounded-xl p-2.5 sm:p-3 md:p-3 font-bold text-lg sm:text-xl md:text-2xl text-blue-600 focus:outline-none focus:bg-white" placeholder="0" /></div></div>`;
             });
-            const cNoVote = draftScores['input_c_novote'] !== undefined ? draftScores['input_c_novote'] : (state.scores[`station_${station}_council_novote`] || '');
-            const cInvalid = draftScores['input_c_invalid'] !== undefined ? draftScores['input_c_invalid'] : (state.scores[`station_${station}_council_invalid`] || '');
+            const cNoVote = draftScores['input_c_novote'] !== undefined ? draftScores['input_c_novote'] : (state.scores[`z${zone}_s${station}_council_novote`] || '');
+            const cInvalid = draftScores['input_c_invalid'] !== undefined ? draftScores['input_c_invalid'] : (state.scores[`z${zone}_s${station}_council_invalid`] || '');
             
             html += `
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
@@ -1325,7 +1327,7 @@
             if (state.currentUser && state.activeTab === 'login') {
                 if (state.currentUser.role === 'admin') state.activeTab = 'status';
                 else {
-                    const sKey = `station_${state.currentUser.station}_eligible`;
+                    const sKey = `z${state.currentUser.zone}_s${state.currentUser.station}_eligible`;
                     state.activeTab = (state.scores[sKey] === undefined) ? 'staffInit' : 'input';
                 }
             }
