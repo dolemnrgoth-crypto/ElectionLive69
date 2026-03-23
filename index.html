@@ -285,8 +285,9 @@
                 onAuthStateChanged(auth, (user) => {
                     if (user) {
                         isFirebaseReady = true;
+                        // ลบการเช็ค is-syncing ออก เพื่อให้รับข้อมูลเรียลไทม์ได้ตลอดเวลา ไม่มีขาดตอน
                         onSnapshot(mainDocRef, (snapshot) => {
-                            if (snapshot.exists() && !document.body.classList.contains('is-syncing')) {
+                            if (snapshot.exists()) {
                                 triggerNotifsAndMerge(snapshot.data());
                                 if (state.activeTab === 'dashboard' || state.activeTab === 'status' || state.activeTab === 'centralInput' || isInitialLoad) renderApp();
                                 isInitialLoad = false;
@@ -306,6 +307,10 @@
             try {
                 const response = await fetch(state.googleSheetUrl + '?action=load');
                 const result = await response.json();
+                
+                // ดักอีกชั้น: ถ้า Firebase ต่อติดแล้วระหว่างที่โหลด Google Sheets ไม่ต้องเอาข้อมูลเก่ามาทับ!
+                if (isFirebaseReady) return false;
+
                 if (result.status === 'success' && result.data) {
                     const parsed = typeof result.data === 'string' ? JSON.parse(result.data) : result.data;
                     triggerNotifsAndMerge(parsed);
@@ -336,7 +341,17 @@
         // --- SAVE DATA (Admin / Global) ---
         function saveData() {
             if (isFirebaseReady) {
-                setDoc(mainDocRef, { ...state }, { merge: true }).catch(e => console.error(e));
+                // บันทึกเฉพาะช่องตั้งค่า (ไม่เซฟทับคะแนน state.scores ที่อาจจะเพิ่งเข้ามาจากเจ้าหน้าที่)
+                const settingsToSave = {
+                    isVotingOpen: state.isVotingOpen,
+                    googleSheetUrl: state.googleSheetUrl,
+                    staffAccounts: state.staffAccounts,
+                    mayorCandidates: state.mayorCandidates,
+                    councilCandidates: state.councilCandidates
+                };
+                updateDoc(mainDocRef, settingsToSave).catch(async e => {
+                    if(e.code === 'not-found') await setDoc(mainDocRef, { ...state });
+                });
             }
             localStorage.setItem('electionNongBuaSalaDataV9', JSON.stringify(state));
             triggerAutoSync(); 
@@ -836,7 +851,14 @@
                     state.stationSubmitCount = {};
                     state.stationClosed = {};
                     state.lastUpdated = null;
-                    saveData();
+                    
+                    if (isFirebaseReady) {
+                        // เขียนทับค่าทั้งหมดเพื่อรีเซ็ตคะแนน
+                        setDoc(mainDocRef, { ...state }).catch(e => console.error(e));
+                    }
+                    localStorage.setItem('electionNongBuaSalaDataV9', JSON.stringify(state));
+                    triggerAutoSync();
+                    
                     window.showToast('สำเร็จ', 'ล้างข้อมูลคะแนนทั้งหมดเรียบร้อยแล้ว');
                     renderApp();
                 }
@@ -1250,7 +1272,6 @@
             return html;
         }
 
-        // --- NEW: CENTRAL STAFF INPUT VIEW ---
         function renderCentralInput() {
             if (!state.isVotingOpen) {
                 return `
@@ -1472,7 +1493,12 @@
 
         window.onload = async () => {
             loadLocalData();
-            await fetchFromGoogleSheet();
+            
+            // ป้องกัน Google Sheet โหลดข้อมูลเก่ามาทับ Firebase
+            const hasFirebase = typeof __firebase_config !== 'undefined' && __firebase_config;
+            if (!hasFirebase) {
+                await fetchFromGoogleSheet();
+            }
             
             initDefaultStaff();
             
