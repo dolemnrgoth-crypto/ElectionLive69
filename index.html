@@ -358,8 +358,9 @@
                     mayorCandidates: state.mayorCandidates,
                     councilCandidates: state.councilCandidates
                 };
-                updateDoc(mainDocRef, settingsToSave).catch(async e => {
-                    if(e.code === 'not-found') await setDoc(mainDocRef, { ...state });
+                // ใช้ setDoc แทน updateDoc เพื่อป้องกัน Error ข้อมูลตั้งต้นไม่มี
+                setDoc(mainDocRef, settingsToSave, { merge: true }).catch(async e => {
+                    console.error("Settings save failed", e);
                 });
             }
             localStorage.setItem('electionNongBuaSalaDataV9', JSON.stringify(state));
@@ -534,7 +535,7 @@
         };
 
         // --- STAFF INIT PROCESS ---
-        window.promptStaffInit = () => {
+        window.promptStaffInit = async () => {
             const eligible = document.getElementById('init_eligible').value;
             if (!eligible || parseInt(eligible) <= 0) {
                 window.showToast('แจ้งเตือน', 'กรุณากรอกจำนวนผู้มีสิทธิ์เลือกตั้งให้ถูกต้อง', true);
@@ -573,20 +574,26 @@
                     modal.remove();
                     
                     const stationKey = `${zone}_${station}`;
-                    const updates = {};
-                    updates[`scores.z${zone}_s${station}_eligible`] = parseInt(eligible);
+                    
+                    // ปรับปรุง Local State โดยตรงทันที
+                    if (!state.scores) state.scores = {};
+                    state.scores[`z${zone}_s${station}_eligible`] = parseInt(eligible);
+
+                    let fbUpdate = {
+                        scores: { [`z${zone}_s${station}_eligible`]: parseInt(eligible) },
+                        _initialized: true
+                    };
                     
                     if (isFirebaseReady) {
                         try {
-                            await updateDoc(mainDocRef, updates);
-                            triggerAutoSync(); // Backup to sheets
+                            await setDoc(mainDocRef, fbUpdate, { merge: true });
                         } catch(e) {
-                            if(e.code === 'not-found') {
-                                await setDoc(mainDocRef, { _initialized: true }, { merge: true });
-                                await updateDoc(mainDocRef, updates);
-                            }
+                            console.error("Firebase save failed but continuing:", e);
                         }
                     }
+
+                    localStorage.setItem('electionNongBuaSalaDataV9', JSON.stringify(state));
+                    triggerAutoSync(); // Backup to sheets
 
                     window.showToast('สำเร็จ', 'บันทึกข้อมูลหน่วยเริ่มต้นเรียบร้อยแล้ว');
                     state.activeTab = 'input';
@@ -693,56 +700,67 @@
             if(btnSave) { btnSave.disabled = true; btnSave.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> บันทึก...'; }
             if(btnClose) { btnClose.disabled = true; }
 
-            let updates = {};
-            const eligible = parseInt(document.getElementById('input_eligible')?.value || 0);
-            updates[`scores.z${zone}_s${station}_eligible`] = eligible;
+            // ดึงข้อมูลที่กรอกล่าสุด
+            let newScores = {};
+            newScores[`z${zone}_s${station}_eligible`] = parseInt(document.getElementById('input_eligible')?.value || 0);
             
             state.mayorCandidates.forEach(c => { 
-                updates[`scores.z${zone}_s${station}_candidate_${c.id}`] = parseInt(document.getElementById(`input_m_${c.id}`)?.value || 0);
+                newScores[`z${zone}_s${station}_candidate_${c.id}`] = parseInt(document.getElementById(`input_m_${c.id}`)?.value || 0);
             });
             state.councilCandidates[zone].forEach(c => { 
-                updates[`scores.z${zone}_s${station}_candidate_${c.id}`] = parseInt(document.getElementById(`input_c_${c.id}`)?.value || 0);
+                newScores[`z${zone}_s${station}_candidate_${c.id}`] = parseInt(document.getElementById(`input_c_${c.id}`)?.value || 0);
             });
 
             ['mayor_novote', 'mayor_invalid', 'council_novote', 'council_invalid'].forEach(f => {
-                updates[`scores.z${zone}_s${station}_${f}`] = parseInt(document.getElementById(`input_${f.charAt(0)}_${f.split('_')[1]}`)?.value || 0);
+                newScores[`z${zone}_s${station}_${f}`] = parseInt(document.getElementById(`input_${f.charAt(0)}_${f.split('_')[1]}`)?.value || 0);
             });
             
             const nowMs = Date.now();
             const nowTime = new Date().toLocaleTimeString('th-TH', {hour: '2-digit', minute:'2-digit', second:'2-digit'});
             const lastUpdatedStr = new Date().toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric' }) + ' ' + nowTime;
 
-            updates[`stationLastUpdated.${stationKey}`] = nowMs;
+            // 1. อัปเดตข้อมูลลงบนหน้าจอก่อนทันที (Optimistic Update)
+            if (!state.scores) state.scores = {};
+            Object.assign(state.scores, newScores);
             
-            updates[`stationSubmitCount.${stationKey}`] = isFirebaseReady ? increment(1) : (state.stationSubmitCount[stationKey] || 0) + 1;
-            
-            if (isFinal) updates[`stationClosed.${stationKey}`] = true;
-            updates['lastUpdated'] = lastUpdatedStr;
+            state.stationLastUpdated[stationKey] = nowMs;
+            const newCount = (state.stationSubmitCount[stationKey] || 0) + 1;
+            state.stationSubmitCount[stationKey] = newCount;
+            if (isFinal) state.stationClosed[stationKey] = true;
+            state.lastUpdated = lastUpdatedStr;
 
+            // 2. เตรียมข้อมูลสำหรับรวม (Merge) ใน Firebase 
+            let fbUpdate = {
+                scores: newScores,
+                stationLastUpdated: { [stationKey]: nowMs },
+                stationSubmitCount: { [stationKey]: newCount },
+                lastUpdated: lastUpdatedStr,
+                _initialized: true
+            };
+            if (isFinal) {
+                fbUpdate.stationClosed = { [stationKey]: true };
+            }
+
+            // 3. ยิงข้อมูลไป Firebase แบบ Merge เพื่อไม่ให้ Error หากข้อมูลตั้งต้นหาย
             if (isFirebaseReady) {
                 try {
-                    await updateDoc(mainDocRef, updates);
+                    await setDoc(mainDocRef, fbUpdate, { merge: true });
                 } catch (e) {
-                    if(e.code === 'not-found') {
-                        await setDoc(mainDocRef, { _initialized: true }, { merge: true });
-                        await updateDoc(mainDocRef, updates);
-                    } else {
-                        console.error("Error updating score:", e);
-                        window.showToast('เกิดข้อผิดพลาด', 'เครือข่ายมีปัญหา กรุณากดบันทึกอีกครั้ง', true);
-                        if(btnSave) { btnSave.disabled = false; btnSave.innerHTML = '<i class="fa-solid fa-save text-lg sm:text-xl"></i> บันทึกชั่วคราว'; }
-                        if(btnClose) { btnClose.disabled = false; }
-                        return;
-                    }
+                    console.error("Firebase save failed but continuing:", e);
                 }
             }
             
             draftScores = {};
             localStorage.removeItem('electionDraftScoresV9');
+            localStorage.setItem('electionNongBuaSalaDataV9', JSON.stringify(state)); 
             
+            // 4. บังคับส่งข้อมูลเข้า Google Sheets เสมอ!
             triggerAutoSync();
 
-            const assumedCount = (state.stationSubmitCount[stationKey] || 0) + 1;
-            window.showStaffAlert(assumedCount, nowTime, isFinal);
+            window.showStaffAlert(newCount, nowTime, isFinal);
+            
+            if(btnSave) { btnSave.disabled = false; btnSave.innerHTML = '<i class="fa-solid fa-save text-lg sm:text-xl"></i> บันทึกชั่วคราว'; }
+            if(btnClose) { btnClose.disabled = false; }
         };
 
         window.executeSaveCentralScores = async (isFinal) => {
@@ -757,52 +775,66 @@
             if(btnSave) { btnSave.disabled = true; btnSave.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> บันทึก...'; }
             if(btnClose) { btnClose.disabled = true; }
 
-            let updates = {};
-            updates[`scores.z${zone}_s${station}_eligible`] = parseInt(document.getElementById('c_input_eligible')?.value || 0);
+            let newScores = {};
+            newScores[`z${zone}_s${station}_eligible`] = parseInt(document.getElementById('c_input_eligible')?.value || 0);
 
             state.mayorCandidates.forEach(c => { 
-                updates[`scores.z${zone}_s${station}_candidate_${c.id}`] = parseInt(document.getElementById(`c_input_m_${c.id}`)?.value || 0);
+                newScores[`z${zone}_s${station}_candidate_${c.id}`] = parseInt(document.getElementById(`c_input_m_${c.id}`)?.value || 0);
             });
             state.councilCandidates[zone].forEach(c => { 
-                updates[`scores.z${zone}_s${station}_candidate_${c.id}`] = parseInt(document.getElementById(`c_input_c_${c.id}`)?.value || 0);
+                newScores[`z${zone}_s${station}_candidate_${c.id}`] = parseInt(document.getElementById(`c_input_c_${c.id}`)?.value || 0);
             });
 
             ['mayor_novote', 'mayor_invalid', 'council_novote', 'council_invalid'].forEach(f => {
-                updates[`scores.z${zone}_s${station}_${f}`] = parseInt(document.getElementById(`c_input_${f.charAt(0)}_${f.split('_')[1]}`)?.value || 0);
+                newScores[`z${zone}_s${station}_${f}`] = parseInt(document.getElementById(`c_input_${f.charAt(0)}_${f.split('_')[1]}`)?.value || 0);
             });
             
             const nowMs = Date.now();
             const nowTime = new Date().toLocaleTimeString('th-TH', {hour: '2-digit', minute:'2-digit', second:'2-digit'});
             const lastUpdatedStr = new Date().toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric' }) + ' ' + nowTime;
 
-            updates[`stationLastUpdated.${stationKey}`] = nowMs;
-            updates[`stationSubmitCount.${stationKey}`] = isFirebaseReady ? increment(1) : (state.stationSubmitCount[stationKey] || 0) + 1;
-            if (isFinal) updates[`stationClosed.${stationKey}`] = true;
-            updates['lastUpdated'] = lastUpdatedStr;
+            // 1. อัปเดตข้อมูลลงบนหน้าจอก่อนทันที (Optimistic Update)
+            if (!state.scores) state.scores = {};
+            Object.assign(state.scores, newScores);
+            
+            state.stationLastUpdated[stationKey] = nowMs;
+            const newCount = (state.stationSubmitCount[stationKey] || 0) + 1;
+            state.stationSubmitCount[stationKey] = newCount;
+            if (isFinal) state.stationClosed[stationKey] = true;
+            state.lastUpdated = lastUpdatedStr;
 
+            // 2. เตรียมข้อมูลสำหรับรวม (Merge) ใน Firebase 
+            let fbUpdate = {
+                scores: newScores,
+                stationLastUpdated: { [stationKey]: nowMs },
+                stationSubmitCount: { [stationKey]: newCount },
+                lastUpdated: lastUpdatedStr,
+                _initialized: true
+            };
+            if (isFinal) {
+                fbUpdate.stationClosed = { [stationKey]: true };
+            }
+
+            // 3. ยิงข้อมูลไป Firebase แบบ Merge
             if (isFirebaseReady) {
                 try {
-                    await updateDoc(mainDocRef, updates);
+                    await setDoc(mainDocRef, fbUpdate, { merge: true });
                 } catch (e) {
-                    if(e.code === 'not-found') {
-                        await setDoc(mainDocRef, { _initialized: true }, { merge: true });
-                        await updateDoc(mainDocRef, updates);
-                    } else {
-                        console.error("Error updating score:", e);
-                        window.showToast('เกิดข้อผิดพลาด', 'เครือข่ายมีปัญหา กรุณากดบันทึกอีกครั้ง', true);
-                        if(btnSave) { btnSave.disabled = false; btnSave.innerHTML = '<i class="fa-solid fa-cloud-arrow-up text-lg sm:text-xl"></i> บันทึกข้อมูลส่วนกลาง'; }
-                        if(btnClose) { btnClose.disabled = false; }
-                        return;
-                    }
+                    console.error("Firebase save failed but continuing:", e);
                 }
             }
             
             draftScores = {};
             localStorage.removeItem('electionDraftScoresV9');
+            localStorage.setItem('electionNongBuaSalaDataV9', JSON.stringify(state)); 
+            
+            // 4. บังคับส่งข้อมูลเข้า Google Sheets เสมอ!
             triggerAutoSync();
             
-            const assumedCount = (state.stationSubmitCount[stationKey] || 0) + 1;
-            window.showStaffAlert(assumedCount, nowTime, isFinal);
+            window.showStaffAlert(newCount, nowTime, isFinal);
+            
+            if(btnSave) { btnSave.disabled = false; btnSave.innerHTML = '<i class="fa-solid fa-cloud-arrow-up text-lg sm:text-xl"></i> บันทึกข้อมูลส่วนกลาง'; }
+            if(btnClose) { btnClose.disabled = false; }
         };
 
         // --- ADMIN CONTROLS ---
