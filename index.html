@@ -88,7 +88,7 @@
             },
             scores: {}, 
             staffAccounts: {},
-            googleSheetUrl: 'https://script.google.com/macros/s/AKfycbylPl9lPMiMQFSM8aX0rws2jwUqdypwP3OY0jbhv7QoyoLT1gARiUgCVWb4YYoeAuqi/exec',
+            googleSheetUrl: 'https://script.google.com/macros/s/AKfycbxzcUhdv0buLXCytYRPvR6i3umHx0LUkF4BbkJsBT-tr3Us7_eG0hs9BH6rWJkPt6vH/exec', // ฝัง URL เรียบร้อย
             loginMode: 'staff',
             loginZone: 1,
             loginStation: 1,
@@ -196,7 +196,7 @@
             };
         };
 
-        // --- LOAD DATA & FIREBASE (HYBRID CORE) ---
+        // --- LOAD DATA & FIREBASE ---
         function loadLocalData() {
             try {
                 const saved = localStorage.getItem('electionNongBuaSalaDataV9');
@@ -211,7 +211,7 @@
                     state.stationSubmitCount = parsed.stationSubmitCount || {};
                     state.stationClosed = parsed.stationClosed || {};
                     state.staffAccounts = parsed.staffAccounts || {};
-                    state.googleSheetUrl = parsed.googleSheetUrl || 'https://script.google.com/macros/s/AKfycbylPl9lPMiMQFSM8aX0rws2jwUqdypwP3OY0jbhv7QoyoLT1gARiUgCVWb4YYoeAuqi/exec';
+                    state.googleSheetUrl = parsed.googleSheetUrl || 'https://script.google.com/macros/s/AKfycbxzcUhdv0buLXCytYRPvR6i3umHx0LUkF4BbkJsBT-tr3Us7_eG0hs9BH6rWJkPt6vH/exec';
                     previousUpdateTimes = { ...state.stationLastUpdated };
                     previousClosedStatus = { ...state.stationClosed };
                 }
@@ -259,7 +259,7 @@
             state.stationSubmitCount = parsed.stationSubmitCount || {};
             state.stationClosed = parsed.stationClosed || {};
             state.staffAccounts = parsed.staffAccounts || state.staffAccounts;
-            state.googleSheetUrl = parsed.googleSheetUrl || 'https://script.google.com/macros/s/AKfycbylPl9lPMiMQFSM8aX0rws2jwUqdypwP3OY0jbhv7QoyoLT1gARiUgCVWb4YYoeAuqi/exec';
+            state.googleSheetUrl = parsed.googleSheetUrl || 'https://script.google.com/macros/s/AKfycbxzcUhdv0buLXCytYRPvR6i3umHx0LUkF4BbkJsBT-tr3Us7_eG0hs9BH6rWJkPt6vH/exec';
             
             localStorage.setItem('electionNongBuaSalaDataV9', JSON.stringify(state));
         }
@@ -285,11 +285,10 @@
                 onAuthStateChanged(auth, (user) => {
                     if (user) {
                         isFirebaseReady = true;
-                        // ฟังการเปลี่ยนแปลงจาก Firebase แบบ Real-time ตลอดเวลา
                         onSnapshot(mainDocRef, (snapshot) => {
                             if (snapshot.exists()) {
                                 triggerNotifsAndMerge(snapshot.data());
-                                if (state.activeTab === 'dashboard' || state.activeTab === 'status' || state.activeTab === 'centralInput' || isInitialLoad) renderApp();
+                                if (state.activeTab === 'dashboard' || state.activeTab === 'status' || state.activeTab === 'centralInput' || state.activeTab === 'settings' || isInitialLoad) renderApp();
                                 isInitialLoad = false;
                             } else {
                                 isInitialLoad = false;
@@ -308,7 +307,6 @@
                 const response = await fetch(state.googleSheetUrl + '?action=load');
                 const result = await response.json();
                 
-                // ดักอีกชั้น: ถ้า Firebase ต่อติดแล้วระหว่างที่โหลด Google Sheets ไม่ต้องเอาข้อมูลเก่ามาทับ!
                 if (isFirebaseReady) return false;
 
                 if (result.status === 'success' && result.data) {
@@ -351,7 +349,6 @@
             }, 5000);
         }
 
-        // ป้องกันไม่ให้แอดมินเผลอเซฟคะแนนเก่าไปทับ
         function saveSettingsOnlyToFirebase() {
             if (isFirebaseReady) {
                 const settingsToSave = {
@@ -684,7 +681,7 @@
             }
         };
 
-        // --- ATOMIC SAVE DATA TO FIREBASE (HYBRID) ---
+        // --- ATOMIC SAVE DATA TO FIREBASE ---
         window.executeSaveStaffScores = async (isFinal) => {
             if (!state.isVotingOpen) return; 
 
@@ -717,7 +714,6 @@
 
             updates[`stationLastUpdated.${stationKey}`] = nowMs;
             
-            // Firebase Atomic Increment
             updates[`stationSubmitCount.${stationKey}`] = isFirebaseReady ? increment(1) : (state.stationSubmitCount[stationKey] || 0) + 1;
             
             if (isFinal) updates[`stationClosed.${stationKey}`] = true;
@@ -845,11 +841,60 @@
             );
         };
 
+        // --- Candidate Management Methods ---
+        window.addCandidate = (type, zone = 1) => {
+            const list = type === 'mayor' ? state.mayorCandidates : state.councilCandidates[zone];
+            const maxNum = list.length > 0 ? Math.max(...list.map(c => c.number)) : 0;
+            const newNum = maxNum + 1;
+            const newId = type === 'mayor' ? `m_${Date.now()}` : `c${zone}_${Date.now()}`;
+            
+            const newCandidate = {
+                id: newId,
+                number: newNum,
+                name: `ผู้สมัครใหม่ เบอร์ ${newNum}`
+            };
+
+            if (type === 'mayor') {
+                state.mayorCandidates.push(newCandidate);
+            } else {
+                state.councilCandidates[zone].push(newCandidate);
+            }
+            
+            saveSettingsOnlyToFirebase();
+            renderApp();
+            window.showToast('เพิ่มผู้สมัครสำเร็จ', `เพิ่มผู้สมัครเบอร์ ${newNum} เรียบร้อยแล้ว`);
+        };
+
+        window.removeCandidate = (type, id, zone = 1) => {
+            if (!confirm('ยืนยันการลบผู้สมัครท่านนี้?\n(หากลบไปแล้ว คะแนนของผู้สมัครคนนี้จะหายไปจากหน้าจอ)')) return;
+
+            if (type === 'mayor') {
+                state.mayorCandidates = state.mayorCandidates.filter(c => c.id !== id);
+            } else {
+                state.councilCandidates[zone] = state.councilCandidates[zone].filter(c => c.id !== id);
+            }
+
+            saveSettingsOnlyToFirebase();
+            renderApp();
+            window.showToast('ลบสำเร็จ', 'ลบผู้สมัครเรียบร้อยแล้ว');
+        };
+
         window.updateCandidateName = (type, id, value, zone = 1) => {
             const list = type === 'mayor' ? state.mayorCandidates : state.councilCandidates[zone];
             const idx = list.findIndex(c => c.id === id);
-            if (idx > -1) { list[idx].name = value; }
+            if (idx > -1) { 
+                list[idx].name = value; 
+            }
         };
+
+        window.updateCandidateNumber = (type, id, value, zone = 1) => {
+            const list = type === 'mayor' ? state.mayorCandidates : state.councilCandidates[zone];
+            const idx = list.findIndex(c => c.id === id);
+            if (idx > -1) { 
+                list[idx].number = parseInt(value) || 0; 
+            }
+        };
+
         window.updateStaffSetting = (key, field, value) => { if(state.staffAccounts[key]) { state.staffAccounts[key][field] = value; } };
         window.updateGoogleSheetUrl = (val) => { state.googleSheetUrl = val; };
         
@@ -861,6 +906,9 @@
 
             saveSettingsOnlyToFirebase();
 
+            // ส่งข้อมูลไปยัง Google Sheets ที่ผูกไว้
+            if(state.googleSheetUrl) syncToGoogleSheet();
+
             setTimeout(() => {
                 btn.innerHTML = '<i class="fa-solid fa-check-circle"></i> บันทึกการตั้งค่าสำเร็จ';
                 btn.classList.replace('bg-indigo-600', 'bg-emerald-600');
@@ -868,7 +916,7 @@
                 btn.classList.replace('border-indigo-800', 'border-emerald-800');
                 btn.classList.replace('shadow-indigo-200', 'shadow-emerald-200');
                 
-                window.showToast('สำเร็จ', 'บันทึกข้อมูลการตั้งค่าลงฐานข้อมูลถาวรเรียบร้อยแล้ว');
+                window.showToast('สำเร็จ', 'บันทึกข้อมูลและส่งเข้า Google Sheets เรียบร้อยแล้ว');
                 
                 setTimeout(() => {
                     btn.innerHTML = originalText;
@@ -882,9 +930,9 @@
         };
 
         window.syncToGoogleSheet = async () => {
-            if (!state.googleSheetUrl) return window.showToast('แจ้งเตือน', 'กรุณากรอก URL ก่อนครับ', true);
+            if (!state.googleSheetUrl) return window.showToast('แจ้งเตือน', 'กรุณาใส่ลิงก์ Web App ของ Google Sheets ก่อนครับ', true);
             const btn = document.getElementById('btn-sync-sheet');
-            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> กำลังอัปเดตข้อมูล...';
+            if(btn) btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> กำลังอัปเดตข้อมูล...';
             
             try {
                 const payload = { action: 'save', state: JSON.stringify(state) };
@@ -897,8 +945,8 @@
             } catch(e) {}
             
             setTimeout(() => { 
-                btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-up"></i> บังคับบันทึกข้อมูลไปชีตทันที'; 
-                window.showToast('สำเร็จ', 'ส่งคำสั่งบันทึกข้อมูลเรียบร้อยแล้ว'); 
+                if(btn) btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-up"></i> บังคับบันทึกข้อมูลไปชีตทันที'; 
+                window.showToast('สำเร็จ', 'ส่งคำสั่งบันทึกข้อมูลไปยัง Google Sheets แล้ว'); 
             }, 500);
         };
 
@@ -1270,44 +1318,125 @@
             return html;
         }
 
-        // --- NEW: RENDER SETTINGS FUNCTION ---
+        // --- ENHANCED SETTINGS RENDERER ---
         window.renderSettings = function() {
             let html = `<div class="max-w-5xl mx-auto fade-in mt-2 sm:mt-4 px-2 lg:px-4 pb-24 sm:pb-32">`;
 
             // Header
-            html += `<div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 sm:p-6 mb-4 sm:mb-6 flex items-center gap-4"><div class="bg-slate-800 p-3 sm:p-4 rounded-xl text-white shadow-sm"><i class="fa-solid fa-users-gear text-xl sm:text-2xl"></i></div><div><h2 class="text-xl sm:text-2xl md:text-3xl font-black text-slate-800 tracking-tight">ตั้งค่าระบบ (Admin)</h2><p class="text-slate-500 font-medium text-xs sm:text-sm mt-1">จัดการผู้สมัคร รหัสผ่านประจำหน่วย และการตั้งค่าพื้นฐาน</p></div></div>`;
+            html += `
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 sm:p-6 mb-4 sm:mb-6 flex items-center gap-4">
+                    <div class="bg-slate-800 p-3 sm:p-4 rounded-xl text-white shadow-sm">
+                        <i class="fa-solid fa-users-gear text-xl sm:text-2xl"></i>
+                    </div>
+                    <div>
+                        <h2 class="text-xl sm:text-2xl md:text-3xl font-black text-slate-800 tracking-tight">ตั้งค่าระบบ (Admin)</h2>
+                        <p class="text-slate-500 font-medium text-xs sm:text-sm mt-1">จัดการผู้สมัคร รหัสผ่านประจำหน่วย และการตั้งค่าพื้นฐาน</p>
+                    </div>
+                </div>
+            `;
 
             // Control Panel
             html += `<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4 sm:mb-6">`;
             
             // Voting Status
-            html += `<div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 sm:p-6"><h3 class="font-bold text-slate-700 mb-4 flex items-center gap-2 border-b border-slate-100 pb-2"><i class="fa-solid fa-power-off text-indigo-500"></i> สถานะการรับคะแนน</h3><div class="flex items-center justify-between bg-slate-50 p-3 sm:p-4 rounded-xl border border-slate-200"><div class="flex flex-col"><span class="font-bold text-sm sm:text-base ${state.isVotingOpen ? 'text-emerald-600' : 'text-rose-600'}"><i class="fa-solid fa-circle text-[10px] animate-pulse"></i> ระบบ${state.isVotingOpen ? 'เปิด' : 'ปิด'}รับคะแนน</span><span class="text-xs text-slate-500 mt-1">${state.isVotingOpen ? 'เจ้าหน้าที่สามารถส่งข้อมูลได้ตามปกติ' : 'เจ้าหน้าที่ไม่สามารถส่งข้อมูลได้ชั่วคราว'}</span></div><button onclick="toggleVotingStatus()" class="px-4 py-2 sm:py-3 rounded-xl font-bold text-white shadow-md transition-all active:scale-95 text-xs sm:text-sm ${state.isVotingOpen ? 'bg-rose-500 hover:bg-rose-600 border-b-4 border-rose-700' : 'bg-emerald-500 hover:bg-emerald-600 border-b-4 border-emerald-700'}">${state.isVotingOpen ? '<i class="fa-solid fa-lock mr-1"></i> ปิดระบบ' : '<i class="fa-solid fa-unlock mr-1"></i> เปิดระบบ'}</button></div></div>`;
+            html += `
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 sm:p-6">
+                    <h3 class="font-bold text-slate-700 mb-4 flex items-center gap-2 border-b border-slate-100 pb-2"><i class="fa-solid fa-power-off text-indigo-500"></i> สถานะการรับคะแนน</h3>
+                    <div class="flex items-center justify-between bg-slate-50 p-3 sm:p-4 rounded-xl border border-slate-200">
+                        <div class="flex flex-col">
+                            <span class="font-bold text-sm sm:text-base ${state.isVotingOpen ? 'text-emerald-600' : 'text-rose-600'}">
+                                <i class="fa-solid fa-circle text-[10px] animate-pulse"></i> ระบบ${state.isVotingOpen ? 'เปิด' : 'ปิด'}รับคะแนน
+                            </span>
+                            <span class="text-xs text-slate-500 mt-1">${state.isVotingOpen ? 'เจ้าหน้าที่สามารถส่งข้อมูลได้ตามปกติ' : 'เจ้าหน้าที่ไม่สามารถส่งข้อมูลได้ชั่วคราว'}</span>
+                        </div>
+                        <button onclick="toggleVotingStatus()" class="px-4 py-2 sm:py-3 rounded-xl font-bold text-white shadow-md transition-all active:scale-95 text-xs sm:text-sm ${state.isVotingOpen ? 'bg-rose-500 hover:bg-rose-600 border-b-4 border-rose-700' : 'bg-emerald-500 hover:bg-emerald-600 border-b-4 border-emerald-700'}">
+                            ${state.isVotingOpen ? '<i class="fa-solid fa-lock mr-1"></i> ปิดระบบ' : '<i class="fa-solid fa-unlock mr-1"></i> เปิดระบบ'}
+                        </button>
+                    </div>
+                </div>
+            `;
             
             // Clear Data
-            html += `<div class="bg-white rounded-2xl shadow-sm border border-red-100 p-4 sm:p-6 relative overflow-hidden"><div class="absolute -right-4 -top-4 text-red-50 text-6xl"><i class="fa-solid fa-triangle-exclamation"></i></div><h3 class="font-bold text-red-600 mb-4 flex items-center gap-2 border-b border-red-50 pb-2 relative z-10"><i class="fa-solid fa-trash-can"></i> ล้างข้อมูลคะแนน (Danger Zone)</h3><div class="flex items-center justify-between bg-red-50 p-3 sm:p-4 rounded-xl border border-red-200 relative z-10"><div class="flex flex-col"><span class="font-bold text-sm sm:text-base text-red-700">รีเซ็ตคะแนนทั้งหมด</span><span class="text-xs text-red-500 mt-1">รายชื่อและรหัสผ่านจะไม่ถูกลบ</span></div><button onclick="clearVotingData()" class="px-4 py-2 sm:py-3 rounded-xl font-bold text-white bg-slate-800 hover:bg-slate-900 shadow-md transition-all active:scale-95 text-xs sm:text-sm border-b-4 border-black"><i class="fa-solid fa-rotate-left mr-1"></i> ล้างข้อมูล</button></div></div>`;
+            html += `
+                <div class="bg-white rounded-2xl shadow-sm border border-red-100 p-4 sm:p-6 relative overflow-hidden">
+                    <div class="absolute -right-4 -top-4 text-red-50 text-6xl"><i class="fa-solid fa-triangle-exclamation"></i></div>
+                    <h3 class="font-bold text-red-600 mb-4 flex items-center gap-2 border-b border-red-50 pb-2 relative z-10"><i class="fa-solid fa-trash-can"></i> ล้างข้อมูลคะแนน (Danger Zone)</h3>
+                    <div class="flex items-center justify-between bg-red-50 p-3 sm:p-4 rounded-xl border border-red-200 relative z-10">
+                        <div class="flex flex-col">
+                            <span class="font-bold text-sm sm:text-base text-red-700">รีเซ็ตคะแนนทั้งหมด</span>
+                            <span class="text-xs text-red-500 mt-1">รายชื่อและรหัสผ่านจะไม่ถูกลบ</span>
+                        </div>
+                        <button onclick="clearVotingData()" class="px-4 py-2 sm:py-3 rounded-xl font-bold text-white bg-slate-800 hover:bg-slate-900 shadow-md transition-all active:scale-95 text-xs sm:text-sm border-b-4 border-black">
+                            <i class="fa-solid fa-rotate-left mr-1"></i> ล้างข้อมูล
+                        </button>
+                    </div>
+                </div>
+            `;
             html += `</div>`;
 
-            // Candidates
-            html += `<div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 sm:p-6 mb-4 sm:mb-6"><h3 class="font-bold text-slate-700 mb-4 flex items-center gap-2 border-b border-slate-100 pb-2"><i class="fa-solid fa-user-tie text-indigo-500"></i> จัดการชื่อผู้สมัคร</h3>`;
+            // Candidates Management
+            html += `
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 sm:p-6 mb-4 sm:mb-6">
+                    <h3 class="font-bold text-slate-700 mb-4 flex items-center gap-2 border-b border-slate-100 pb-2"><i class="fa-solid fa-user-tie text-indigo-500"></i> จัดการชื่อและเพิ่มผู้สมัคร</h3>
+            `;
             
             // Mayor
-            html += `<div class="mb-6"><h4 class="text-sm font-bold text-amber-600 mb-3 bg-amber-50 inline-block px-3 py-1 rounded-lg">นายกเทศมนตรี</h4><div class="grid grid-cols-1 md:grid-cols-2 gap-3">`;
+            html += `
+                <div class="mb-6">
+                    <div class="flex items-center justify-between mb-3">
+                        <h4 class="text-sm font-bold text-amber-600 bg-amber-50 inline-block px-3 py-1 rounded-lg">นายกเทศมนตรี</h4>
+                        <button onclick="addCandidate('mayor', 0)" class="text-xs bg-amber-500 hover:bg-amber-600 text-white px-2 py-1 rounded shadow-sm transition-colors"><i class="fa-solid fa-plus"></i> เพิ่มผู้สมัคร</button>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            `;
             state.mayorCandidates.forEach(c => {
-                html += `<div class="flex items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-200"><div class="w-8 h-8 bg-white border border-slate-200 rounded-lg flex items-center justify-center font-bold text-slate-600 shrink-0">${c.number}</div><input type="text" value="${c.name}" onchange="updateCandidateName('mayor', '${c.id}', this.value)" class="flex-1 bg-white border border-slate-300 rounded-lg p-2 text-sm font-medium focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"></div>`;
+                html += `
+                    <div class="flex items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-200 group transition-all hover:border-amber-300">
+                        <input type="number" value="${c.number}" onchange="updateCandidateNumber('mayor', '${c.id}', this.value)" class="w-10 h-10 bg-white border border-slate-200 rounded-lg text-center font-bold text-slate-600 shrink-0 focus:ring-2 focus:ring-amber-500 outline-none">
+                        <input type="text" value="${c.name}" onchange="updateCandidateName('mayor', '${c.id}', this.value)" class="flex-1 bg-white border border-slate-300 rounded-lg p-2 text-sm font-medium focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none">
+                        <button onclick="removeCandidate('mayor', '${c.id}', 0)" class="text-slate-400 hover:text-red-500 p-2 transition-colors" title="ลบผู้สมัคร"><i class="fa-solid fa-trash-can"></i></button>
+                    </div>
+                `;
             });
             html += `</div></div>`;
 
             // Council Zone 1
-            html += `<div class="mb-6"><h4 class="text-sm font-bold text-blue-600 mb-3 bg-blue-50 inline-block px-3 py-1 rounded-lg">ส.ท. เขตเลือกตั้งที่ 1</h4><div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">`;
+            html += `
+                <div class="mb-6">
+                    <div class="flex items-center justify-between mb-3">
+                        <h4 class="text-sm font-bold text-blue-600 bg-blue-50 inline-block px-3 py-1 rounded-lg">ส.ท. เขตเลือกตั้งที่ 1</h4>
+                        <button onclick="addCandidate('council', 1)" class="text-xs bg-blue-500 hover:bg-blue-600 text-white px-2 py-1 rounded shadow-sm transition-colors"><i class="fa-solid fa-plus"></i> เพิ่มผู้สมัคร</button>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+            `;
             state.councilCandidates[1].forEach(c => {
-                html += `<div class="flex items-center gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-200"><div class="w-7 h-7 bg-white border border-slate-200 rounded-md flex items-center justify-center font-bold text-xs text-slate-600 shrink-0">${c.number}</div><input type="text" value="${c.name}" onchange="updateCandidateName('council', '${c.id}', this.value, 1)" class="flex-1 bg-white border border-slate-300 rounded-lg p-1.5 text-xs font-medium focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 min-w-0"></div>`;
+                html += `
+                    <div class="flex items-center gap-1.5 bg-slate-50 p-1.5 rounded-xl border border-slate-200 hover:border-blue-300 transition-colors">
+                        <input type="number" value="${c.number}" onchange="updateCandidateNumber('council', '${c.id}', this.value, 1)" class="w-8 h-8 bg-white border border-slate-200 rounded-md text-center font-bold text-xs text-slate-600 shrink-0 focus:ring-2 focus:ring-blue-500 outline-none">
+                        <input type="text" value="${c.name}" onchange="updateCandidateName('council', '${c.id}', this.value, 1)" class="flex-1 bg-white border border-slate-300 rounded-lg p-1.5 text-xs font-medium focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none min-w-0">
+                        <button onclick="removeCandidate('council', '${c.id}', 1)" class="text-slate-400 hover:text-red-500 p-1.5 transition-colors" title="ลบ"><i class="fa-solid fa-trash-can text-sm"></i></button>
+                    </div>
+                `;
             });
             html += `</div></div>`;
 
             // Council Zone 2
-            html += `<div><h4 class="text-sm font-bold text-blue-600 mb-3 bg-blue-50 inline-block px-3 py-1 rounded-lg">ส.ท. เขตเลือกตั้งที่ 2</h4><div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">`;
+            html += `
+                <div>
+                    <div class="flex items-center justify-between mb-3">
+                        <h4 class="text-sm font-bold text-blue-600 bg-blue-50 inline-block px-3 py-1 rounded-lg">ส.ท. เขตเลือกตั้งที่ 2</h4>
+                        <button onclick="addCandidate('council', 2)" class="text-xs bg-blue-500 hover:bg-blue-600 text-white px-2 py-1 rounded shadow-sm transition-colors"><i class="fa-solid fa-plus"></i> เพิ่มผู้สมัคร</button>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+            `;
             state.councilCandidates[2].forEach(c => {
-                html += `<div class="flex items-center gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-200"><div class="w-7 h-7 bg-white border border-slate-200 rounded-md flex items-center justify-center font-bold text-xs text-slate-600 shrink-0">${c.number}</div><input type="text" value="${c.name}" onchange="updateCandidateName('council', '${c.id}', this.value, 2)" class="flex-1 bg-white border border-slate-300 rounded-lg p-1.5 text-xs font-medium focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 min-w-0"></div>`;
+                html += `
+                    <div class="flex items-center gap-1.5 bg-slate-50 p-1.5 rounded-xl border border-slate-200 hover:border-blue-300 transition-colors">
+                        <input type="number" value="${c.number}" onchange="updateCandidateNumber('council', '${c.id}', this.value, 2)" class="w-8 h-8 bg-white border border-slate-200 rounded-md text-center font-bold text-xs text-slate-600 shrink-0 focus:ring-2 focus:ring-blue-500 outline-none">
+                        <input type="text" value="${c.name}" onchange="updateCandidateName('council', '${c.id}', this.value, 2)" class="flex-1 bg-white border border-slate-300 rounded-lg p-1.5 text-xs font-medium focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none min-w-0">
+                        <button onclick="removeCandidate('council', '${c.id}', 2)" class="text-slate-400 hover:text-red-500 p-1.5 transition-colors" title="ลบ"><i class="fa-solid fa-trash-can text-sm"></i></button>
+                    </div>
+                `;
             });
             html += `</div></div></div>`;
 
@@ -1328,7 +1457,20 @@
             html += `</div>`;
 
             // Google Sheets
-            html += `<div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 sm:p-6 mb-4 sm:mb-6"><h3 class="font-bold text-slate-700 mb-4 flex items-center gap-2 border-b border-slate-100 pb-2"><i class="fa-solid fa-cloud text-indigo-500"></i> การเชื่อมต่อและสำรองข้อมูล</h3><div class="flex flex-col gap-3"><label class="text-sm font-bold text-slate-700">Google Apps Script Web App URL</label><input type="text" value="${state.googleSheetUrl || ''}" onchange="updateGoogleSheetUrl(this.value)" class="w-full bg-slate-50 border border-slate-300 rounded-xl p-3 text-sm font-medium focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-slate-600" placeholder="https://script.google.com/macros/s/.../exec"><div class="flex flex-col sm:flex-row gap-3 mt-2"><button id="btn-sync-sheet" onclick="syncToGoogleSheet()" class="px-4 py-2 sm:py-3 rounded-xl font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 transition-all text-xs sm:text-sm flex items-center justify-center gap-2"><i class="fa-solid fa-cloud-arrow-up"></i> บังคับบันทึกข้อมูลไปชีตทันที</button></div><p class="text-[10px] sm:text-xs text-slate-500 mt-1">* ระบบจะบันทึกข้อมูลไปยัง Firebase ทันทีแบบ Real-time อยู่แล้ว ส่วน Google Sheet จะเป็นการสำรองข้อมูลทุก 3 วินาทีเมื่อมีการเปลี่ยนแปลง</p></div></div>`;
+            html += `
+            <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 sm:p-6 mb-4 sm:mb-6">
+                <h3 class="font-bold text-slate-700 mb-4 flex items-center gap-2 border-b border-slate-100 pb-2"><i class="fa-solid fa-cloud text-indigo-500"></i> การเชื่อมต่อ Google Sheets</h3>
+                <div class="flex flex-col gap-3">
+                    <label class="text-sm font-bold text-slate-700">Google Apps Script Web App URL <span class="text-red-500 font-normal text-xs">(ไม่ใช่ลิงก์ชีตธรรมดา)</span></label>
+                    <input type="text" value="${state.googleSheetUrl || ''}" onchange="updateGoogleSheetUrl(this.value)" class="w-full bg-slate-50 border border-slate-300 rounded-xl p-3 text-sm font-medium focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-slate-600" placeholder="https://script.google.com/macros/s/.../exec">
+                    <div class="flex flex-col sm:flex-row gap-3 mt-2">
+                        <button id="btn-sync-sheet" onclick="syncToGoogleSheet()" class="px-4 py-2 sm:py-3 rounded-xl font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 transition-all text-xs sm:text-sm flex items-center justify-center gap-2">
+                            <i class="fa-solid fa-cloud-arrow-up"></i> บังคับบันทึกข้อมูลไปชีตทันที
+                        </button>
+                    </div>
+                    <p class="text-[10px] sm:text-xs text-slate-500 mt-1">* ระบบจะบันทึกข้อมูลเข้า Firebase แบบ Real-time ตามปกติ ส่วน Google Sheet จะเป็นการสำรองรายชื่อ รหัสผ่าน และคะแนนทุกครั้งที่มีการกดบันทึก</p>
+                </div>
+            </div>`;
 
             html += `</div>`;
 
@@ -1356,7 +1498,6 @@
         window.onload = async () => {
             loadLocalData();
             
-            // รอโหลดข้อมูลครั้งแรกก่อนให้เริ่มใช้งาน
             await fetchFromGoogleSheet();
             initDefaultStaff();
             
